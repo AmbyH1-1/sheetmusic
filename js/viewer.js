@@ -16,7 +16,7 @@ function loadPdfJs() {
   return pdfjsPromise;
 }
 
-export function createViewer({ onBack }) {
+export function createViewer({ onBack, isAnnotating = () => false, onPageChange = async () => {} }) {
   const readerView = document.querySelector("#readerView");
   const pageContainer = document.querySelector("#pageContainer");
   const pdfCanvas = document.querySelector("#pdfCanvas");
@@ -48,17 +48,19 @@ export function createViewer({ onBack }) {
 
   function updatePageLabel() {
     pageLabel.textContent = pdfDocument ? `${currentPage} / ${pdfDocument.numPages}` : "— / —";
-    document.querySelector("#previousButton").disabled = !pdfDocument || currentPage <= 1;
-    document.querySelector("#nextButton").disabled = !pdfDocument || currentPage >= pdfDocument.numPages;
+    document.querySelector("#previousButton").disabled = isAnnotating() || !pdfDocument || currentPage <= 1;
+    document.querySelector("#nextButton").disabled = isAnnotating() || !pdfDocument || currentPage >= pdfDocument.numPages;
   }
 
   function showToolbar() {
     toolbar.classList.remove("is-hidden");
     window.clearTimeout(hideTimer);
+    if (isAnnotating()) return;
     hideTimer = window.setTimeout(() => toolbar.classList.add("is-hidden"), 3200);
   }
 
   function toggleToolbar() {
+    if (isAnnotating()) return;
     if (toolbar.classList.contains("is-hidden")) {
       showToolbar();
     } else {
@@ -153,7 +155,10 @@ export function createViewer({ onBack }) {
         cacheRenderedPage(pageNumber);
       }
 
+      if (sequence !== renderSequence) return;
       inkContext.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
+      await onPageChange(currentPdf.id, pageNumber);
+      if (sequence !== renderSequence) return;
       saveLastPage(currentPdf.id, currentPage, pdfDocument.numPages).catch((error) => {
         setMessage(`Could not save your place: ${error.message}`);
       });
@@ -274,7 +279,7 @@ export function createViewer({ onBack }) {
   }
 
   function navigate(delta) {
-    if (!pdfDocument) return;
+    if (!pdfDocument || isAnnotating()) return;
     const nextPage = currentPage + delta;
     if (nextPage < 1 || nextPage > pdfDocument.numPages) return;
     showToolbar();
@@ -282,7 +287,7 @@ export function createViewer({ onBack }) {
   }
 
   function handleTapZone(event) {
-    if (!pdfDocument) return;
+    if (!pdfDocument || isAnnotating()) return;
     const x = event.clientX / window.innerWidth;
     if (x < zoneFraction) {
       navigate(-1);
@@ -339,5 +344,16 @@ export function createViewer({ onBack }) {
     setMessage(`Could not load reader settings: ${error.message}`);
   });
 
-  return { open };
+  function setAnnotationMode(active) {
+    readerView.classList.toggle("is-annotating", active);
+    updatePageLabel();
+    if (active) {
+      window.clearTimeout(hideTimer);
+      toolbar.classList.remove("is-hidden");
+    } else {
+      showToolbar();
+    }
+  }
+
+  return { open, setAnnotationMode };
 }

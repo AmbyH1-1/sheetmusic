@@ -1,4 +1,5 @@
 import { initializeDatabase } from "./db.js";
+import { createAnnotator } from "./annotate.js";
 import { createLibrary } from "./library.js";
 import { createMetronome } from "./metronome.js";
 import { createViewer } from "./viewer.js";
@@ -17,6 +18,10 @@ function preventGestureZoom() {
 async function start() {
   preventGestureZoom();
   const metronome = createMetronome();
+  let viewer;
+  const annotator = createAnnotator({
+    onModeChange: (active) => viewer.setAnnotationMode(active)
+  });
   const library = createLibrary({
     onOpen: async (pdf) => {
       libraryView.classList.remove("is-active");
@@ -25,8 +30,9 @@ async function start() {
       await viewer.open(pdf.id);
     }
   });
-  const viewer = createViewer({
+  viewer = createViewer({
     onBack: async () => {
+      await annotator.exitMode();
       metronome.stop();
       libraryView.classList.add("is-active");
       libraryView.setAttribute("aria-hidden", "false");
@@ -34,7 +40,9 @@ async function start() {
         history.replaceState({}, "");
       }
       await library.refresh();
-    }
+    },
+    isAnnotating: () => annotator.isActive(),
+    onPageChange: (pdfId, pageNumber) => annotator.setPage(pdfId, pageNumber)
   });
 
   try {

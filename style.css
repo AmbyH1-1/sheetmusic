@@ -223,6 +223,20 @@ h1 {
 
 #inkCanvas {
   background: transparent;
+  pointer-events: none;
+}
+
+.reader-view.is-annotating .page-container {
+  pointer-events: auto;
+}
+
+.reader-view.is-annotating .tap-zone {
+  pointer-events: none;
+}
+
+.reader-view.is-annotating #inkCanvas {
+  pointer-events: auto;
+  touch-action: none;
 }
 
 .tap-zone {
@@ -322,6 +336,139 @@ h1 {
   text-align: center;
   text-shadow: 0 1px 5px #000;
   pointer-events: none;
+}
+
+.annotation-toggle[aria-pressed="true"] {
+  background: #2764bc;
+}
+
+.annotation-toolbar {
+  position: absolute;
+  z-index: 5;
+  top: max(66px, calc(env(safe-area-inset-top) + 58px));
+  left: max(12px, env(safe-area-inset-left));
+  right: max(12px, env(safe-area-inset-right));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-height: calc(100% - 80px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid #414753;
+  border-radius: 14px;
+  background: #191c23f2;
+  box-shadow: 0 4px 20px #0007;
+  overscroll-behavior: contain;
+}
+
+.annotation-tool-group,
+.annotation-color-group,
+.annotation-history-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.annotation-tool-button,
+.annotation-action-button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.annotation-tool-button.is-selected,
+.annotation-color-button.is-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.annotation-color-button {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+}
+
+.color-swatch {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border: 2px solid #ffffffaa;
+  border-radius: 50%;
+}
+
+.swatch-black {
+  background: #17191f;
+}
+
+.swatch-red {
+  background: #e34d59;
+}
+
+.swatch-blue {
+  background: #3485e4;
+}
+
+.swatch-green {
+  background: #37a56b;
+}
+
+.swatch-orange {
+  background: #f09a38;
+}
+
+.annotation-width-control {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 2px 8px;
+  min-width: 140px;
+  color: #dfe3ea;
+  font-size: 13px;
+}
+
+.annotation-width-control output {
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.annotation-width-control input {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+  touch-action: pan-x;
+}
+
+.finger-drawing-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 8px;
+  color: #dfe3ea;
+  font-size: 13px;
+}
+
+.finger-drawing-control input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+
+.annotation-message {
+  flex: 1 1 100%;
+  min-height: 16px;
+  margin: 0;
+  color: #ffcf8a;
+  font-size: 12px;
+  text-align: center;
 }
 
 .metronome-panel {

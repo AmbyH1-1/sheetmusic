@@ -41,12 +41,41 @@
       <header id="readerToolbar" class="reader-toolbar">
         <button id="backButton" class="button" type="button">Library</button>
         <div id="readerTitle" class="reader-title"></div>
+        <button id="annotationToggle" class="button annotation-toggle" type="button" aria-pressed="false">Annotate</button>
         <div class="page-controls">
           <button id="previousButton" class="button icon-button" type="button" aria-label="Previous page">‹</button>
           <span id="pageLabel" aria-live="polite">— / —</span>
           <button id="nextButton" class="button icon-button" type="button" aria-label="Next page">›</button>
         </div>
       </header>
+      <div id="annotationToolbar" class="annotation-toolbar" role="toolbar" aria-label="Annotation tools" hidden>
+        <div class="annotation-tool-group" role="group" aria-label="Drawing tool">
+          <button class="annotation-tool-button is-selected" type="button" data-annotation-tool="pen" aria-pressed="true">Pen</button>
+          <button class="annotation-tool-button" type="button" data-annotation-tool="highlighter" aria-pressed="false">Highlight</button>
+          <button class="annotation-tool-button" type="button" data-annotation-tool="eraser" aria-pressed="false">Eraser</button>
+        </div>
+        <div class="annotation-color-group" role="group" aria-label="Ink color">
+          <button class="annotation-color-button is-selected" type="button" data-ink-color="#17191f" aria-label="Black ink" aria-pressed="true"><span class="color-swatch swatch-black"></span></button>
+          <button class="annotation-color-button" type="button" data-ink-color="#e34d59" aria-label="Red ink" aria-pressed="false"><span class="color-swatch swatch-red"></span></button>
+          <button class="annotation-color-button" type="button" data-ink-color="#3485e4" aria-label="Blue ink" aria-pressed="false"><span class="color-swatch swatch-blue"></span></button>
+          <button class="annotation-color-button" type="button" data-ink-color="#37a56b" aria-label="Green ink" aria-pressed="false"><span class="color-swatch swatch-green"></span></button>
+          <button class="annotation-color-button" type="button" data-ink-color="#f09a38" aria-label="Orange ink" aria-pressed="false"><span class="color-swatch swatch-orange"></span></button>
+        </div>
+        <label class="annotation-width-control" for="annotationWidth">
+          Size <output id="annotationWidthValue">4 px</output>
+          <input id="annotationWidth" type="range" min="1" max="24" step="1" value="4">
+        </label>
+        <div class="annotation-history-group" role="group" aria-label="Annotation history">
+          <button id="annotationUndo" class="annotation-action-button" type="button" aria-label="Undo" disabled>Undo</button>
+          <button id="annotationRedo" class="annotation-action-button" type="button" aria-label="Redo" disabled>Redo</button>
+          <button id="annotationClear" class="annotation-action-button" type="button">Clear page</button>
+        </div>
+        <label class="finger-drawing-control" for="allowFingerDrawing">
+          <input id="allowFingerDrawing" type="checkbox">
+          Allow finger drawing
+        </label>
+        <p id="annotationMessage" class="annotation-message" role="status" aria-live="polite"></p>
+      </div>
       <details id="metronomePanel" class="metronome-panel">
         <summary class="metronome-summary">
           <span>Metronome</span>
