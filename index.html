@@ -5,22 +5,66 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#111318">
-  <meta name="application-version" content="2.0.0">
+  <meta name="application-version" content="2.1.1">
   <title>Sheet Music</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="apple-touch-icon" href="./icons/icon-180.png">
+  <link rel="icon" type="image/svg+xml" href="./icons/icon.svg">
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
   <main id="app">
+    <p id="offlineIndicator" class="offline-indicator" role="status" aria-live="polite" hidden></p>
+    <p id="updateMessage" class="update-message" role="status" hidden>
+      <span>Update ready.</span>
+      <button id="reloadAppButton" type="button">Tap to reload</button>
+    </p>
     <section id="libraryView" class="view library-view is-active" aria-labelledby="libraryTitle">
       <header class="library-header">
         <div>
           <h1 id="libraryTitle">Sheet Music</h1>
           <p class="subtitle">Your personal music library</p>
+          <span id="buildVersion" class="build-version"></span>
         </div>
         <button id="importButton" class="button button-primary" type="button">Import PDF</button>
         <input id="fileInput" type="file" accept="application/pdf,.pdf" multiple hidden>
       </header>
+
+      <section class="app-status" aria-label="App status">
+        <p id="serviceWorkerStatus" class="service-worker-status" role="status" aria-live="polite"></p>
+      </section>
+
+      <aside id="installInstructions" class="install-instructions" hidden>
+        <p>To install on iPad: in Safari, tap Share, then Add to Home Screen.</p>
+        <button id="dismissInstallInstructions" type="button" aria-label="Dismiss install instructions">Dismiss</button>
+      </aside>
+
+      <section class="storage-settings" aria-labelledby="storageTitle">
+        <div class="storage-settings-header">
+          <h2 id="storageTitle">Storage and backups</h2>
+          <button id="requestStorageButton" type="button">Request persistent storage</button>
+        </div>
+        <p id="storageStatus" class="storage-status" role="status" aria-live="polite">Checking storage…</p>
+        <p class="backup-reminder">Back up your library regularly; browser storage can be cleared.</p>
+        <div class="backup-actions">
+          <button id="exportBackupButton" type="button">Export backup</button>
+          <button id="importBackupButton" type="button">Import backup</button>
+          <input id="backupFileInput" type="file" accept="application/json,.json" hidden>
+        </div>
+        <progress id="backupProgress" class="backup-progress" max="1" value="0" hidden></progress>
+        <p id="backupMessage" class="backup-message" role="status" aria-live="polite"></p>
+        <div id="backupModePanel" class="backup-mode-panel" role="dialog" aria-labelledby="backupModeTitle" hidden>
+          <h3 id="backupModeTitle">Restore backup</h3>
+          <p>Merge keeps existing data and adds items that are not already present.</p>
+          <div class="backup-mode-actions">
+            <button id="mergeBackupButton" type="button">Merge</button>
+            <button id="replaceBackupButton" type="button">Replace all</button>
+            <button id="cancelBackupButton" type="button">Cancel</button>
+          </div>
+        </div>
+      </section>
 
       <p id="libraryMessage" class="message" role="status" aria-live="polite"></p>
       <div id="emptyLibrary" class="empty-state">

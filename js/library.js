@@ -1,4 +1,11 @@
-import { addPdf, deletePdf, listPdfs, renamePdf } from "./db.js";
+import {
+  addPdf,
+  deletePdf,
+  exportBackup,
+  importBackup,
+  listPdfs,
+  renamePdf
+} from "./db.js";
 
 export function createLibrary({ onOpen }) {
   const importButton = document.querySelector("#importButton");
@@ -6,9 +13,134 @@ export function createLibrary({ onOpen }) {
   const pdfList = document.querySelector("#pdfList");
   const emptyLibrary = document.querySelector("#emptyLibrary");
   const message = document.querySelector("#libraryMessage");
+  const exportBackupButton = document.querySelector("#exportBackupButton");
+  const importBackupButton = document.querySelector("#importBackupButton");
+  const backupFileInput = document.querySelector("#backupFileInput");
+  const backupProgress = document.querySelector("#backupProgress");
+  const backupMessage = document.querySelector("#backupMessage");
+  const backupModePanel = document.querySelector("#backupModePanel");
+  const mergeBackupButton = document.querySelector("#mergeBackupButton");
+  const replaceBackupButton = document.querySelector("#replaceBackupButton");
+  const cancelBackupButton = document.querySelector("#cancelBackupButton");
+  let pendingBackup = null;
+  let backupBusy = false;
 
   function showMessage(text) {
     message.textContent = text;
+  }
+
+  function showBackupMessage(text) {
+    backupMessage.textContent = text;
+  }
+
+  function formatBytes(bytes) {
+    if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function setBackupBusy(busy) {
+    backupBusy = busy;
+    exportBackupButton.disabled = busy;
+    importBackupButton.disabled = busy;
+    mergeBackupButton.disabled = busy;
+    replaceBackupButton.disabled = busy;
+    cancelBackupButton.disabled = busy;
+  }
+
+  function updateBackupProgress(progress) {
+    const total = Math.max(1, progress.totalBytes);
+    backupProgress.max = total;
+    backupProgress.value = Math.min(total, progress.completedBytes);
+    backupProgress.hidden = false;
+    if (progress.phase === "encoding") showBackupMessage("Encoding PDF data for backup…");
+    else if (progress.phase === "decoding") showBackupMessage("Restoring PDF data…");
+    else if (progress.phase === "saving") showBackupMessage("Saving restored data…");
+    else showBackupMessage("Preparing backup file…");
+  }
+
+  function downloadBackup(file) {
+    const url = URL.createObjectURL(file);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = file.name;
+    link.rel = "noopener";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
+  async function shareOrDownloadBackup(file) {
+    let canShareFiles = typeof navigator.share === "function";
+    if (canShareFiles && typeof navigator.canShare === "function") {
+      try {
+        canShareFiles = navigator.canShare({ files: [file] });
+      } catch {
+        canShareFiles = false;
+      }
+    }
+
+    if (canShareFiles) {
+      try {
+        await navigator.share({ files: [file], title: "Sheet Music backup" });
+        showBackupMessage("Backup ready to save or share.");
+        return;
+      } catch (error) {
+        if (error.name === "AbortError") {
+          showBackupMessage("Backup sharing was canceled.");
+          return;
+        }
+        showBackupMessage(`Sharing failed; downloading instead: ${error.message}`);
+      }
+    }
+    downloadBackup(file);
+    showBackupMessage("Backup downloaded.");
+  }
+
+  async function restorePendingBackup(mode) {
+    if (!pendingBackup || backupBusy) return;
+    if (
+      mode === "replace" &&
+      !window.confirm("Replace all PDFs, annotations, and settings with this backup? This cannot be undone.")
+    ) return;
+
+    setBackupBusy(true);
+    backupProgress.hidden = false;
+    backupProgress.value = 0;
+    let lastPercent = -1;
+    try {
+      const sourcePdfs = Array.isArray(pendingBackup.pdfs) ? pendingBackup.pdfs : [];
+      const pdfBytes = sourcePdfs.reduce(
+        (total, pdf) => total + (
+          pdf && typeof pdf.data === "string" ? Math.floor((pdf.data.length * 3) / 4) : 0
+        ),
+        0
+      );
+      backupProgress.max = Math.max(1, pdfBytes);
+      const result = await importBackup(pendingBackup, mode, (progress) => {
+        const total = Math.max(1, progress.totalBytes);
+        const percent = Math.floor((progress.completedBytes / total) * 100);
+        if (percent !== lastPercent || progress.phase === "saving") {
+          lastPercent = percent;
+          updateBackupProgress(progress);
+        }
+      });
+      pendingBackup = null;
+      backupModePanel.hidden = true;
+      backupFileInput.value = "";
+      await refresh();
+      showBackupMessage(
+        `Restore complete: ${result.pdfCount} PDF${result.pdfCount === 1 ? "" : "s"}, ` +
+        `${result.annotationCount} annotation page${result.annotationCount === 1 ? "" : "s"}, ` +
+        `${result.settingCount} setting${result.settingCount === 1 ? "" : "s"}. Reloading…`
+      );
+      window.setTimeout(() => window.location.reload(), 900);
+    } catch (error) {
+      showBackupMessage(`Could not restore backup: ${error.message}`);
+    } finally {
+      setBackupBusy(false);
+      backupProgress.hidden = true;
+    }
   }
 
   function formatOpened(pdf) {
@@ -121,6 +253,65 @@ export function createLibrary({ onOpen }) {
     } else {
       showMessage(`${imported} PDF${imported === 1 ? "" : "s"} imported.`);
     }
+  });
+
+  exportBackupButton.addEventListener("click", async () => {
+    if (backupBusy) return;
+    setBackupBusy(true);
+    backupProgress.hidden = false;
+    backupProgress.value = 0;
+    try {
+      const pdfs = await listPdfs();
+      const estimatedBytes = pdfs.reduce((total, pdf) => {
+        if (!(pdf.data instanceof ArrayBuffer)) return total;
+        return total + Math.ceil(pdf.data.byteLength * 4 / 3);
+      }, 0);
+      if (
+        estimatedBytes >= 50 * 1024 * 1024 &&
+        !window.confirm(`This backup may be about ${formatBytes(estimatedBytes)}. Continue?`)
+      ) return;
+
+      const backup = await exportBackup(updateBackupProgress);
+      const contents = JSON.stringify(backup);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const backupFile = new File(
+        [contents],
+        `sheetmusic-backup-${timestamp}.json`,
+        { type: "application/json" }
+      );
+      await shareOrDownloadBackup(backupFile);
+    } catch (error) {
+      showBackupMessage(`Could not export backup: ${error.message}`);
+    } finally {
+      setBackupBusy(false);
+      backupProgress.hidden = true;
+    }
+  });
+
+  importBackupButton.addEventListener("click", () => backupFileInput.click());
+  backupFileInput.addEventListener("change", async () => {
+    const file = backupFileInput.files && backupFileInput.files[0];
+    if (!file) return;
+    backupFileInput.value = "";
+    showBackupMessage("Reading backup file…");
+    try {
+      const backup = JSON.parse(await file.text());
+      if (!backup || backup.formatVersion !== 1) {
+        throw new Error("Unsupported backup format.");
+      }
+      pendingBackup = backup;
+      backupModePanel.hidden = false;
+      showBackupMessage("Choose Merge or Replace all to continue.");
+    } catch (error) {
+      showBackupMessage(`Could not read backup: ${error.message}`);
+    }
+  });
+  mergeBackupButton.addEventListener("click", () => restorePendingBackup("merge"));
+  replaceBackupButton.addEventListener("click", () => restorePendingBackup("replace"));
+  cancelBackupButton.addEventListener("click", () => {
+    pendingBackup = null;
+    backupModePanel.hidden = true;
+    showBackupMessage("");
   });
 
   return {
