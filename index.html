@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#111318">
+  <title>Sheet Music</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main id="app">
+    <section id="libraryView" class="view library-view" aria-labeWlledby="libraryTitle">
+      <header class="library-header">
+        <div>
+          <h1 id="libraryTitle">Sheet Music</h1>
+          <p class="subtitle">Your personal music library</p>
+        </div>
+        <button id="importButton" class="button button-primary" type="button">Import PDF</button>
+        <input id="fileInput" type="file" accept="application/pdf,.pdf" multiple hidden>
+      </header>
+
+      <p id="libraryMessage" class="message" role="status" aria-live="polite"></p>
+      <div id="emptyLibrary" class="empty-state">
+        <p>Your library is empty.</p>
+        <p>Import a PDF from the Files app to get started.</p>
+      </div>
+      <ul id="pdfList" class="pdf-list" aria-label="Sheet music library"></ul>
+    </section>
+
+    <section id="readerView" class="view reader-view" aria-label="PDF reader" hidden>
+      <div id="pageContainer" class="page-container">
+        <canvas id="pdfCanvas" aria-label="Current sheet music page"></canvas>
+        <canvas id="inkCanvas" aria-hidden="true"></canvas>
+      </div>
+      <button id="previousZone" class="tap-zone tap-zone-left" type="button" aria-label="Previous page"></button>
+      <button id="nextZone" class="tap-zone tap-zone-right" type="button" aria-label="Next page"></button>
+      <button id="centerZone" class="tap-zone tap-zone-center" type="button" aria-label="Show or hide toolbar"></button>
+
+      <header id="readerToolbar" class="reader-toolbar">
+        <button id="backButton" class="button" type="button">Library</button>
+        <div id="readerTitle" class="reader-title"></div>
+        <div class="page-controls">
+          <button id="previousButton" class="button icon-button" type="button" aria-label="Previous page">‹</button>
+          <span id="pageLabel" aria-live="polite">— / —</span>
+          <button id="nextButton" class="button icon-button" type="button" aria-label="Next page">›</button>
+        </div>
+      </header>
+      <p id="readerMessage" class="reader-message" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
