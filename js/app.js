@@ -1,5 +1,6 @@
 import { initializeDatabase } from "./db.js";
 import { createLibrary } from "./library.js";
+import { createMetronome } from "./metronome.js";
 import { createViewer } from "./viewer.js";
 
 const libraryView = document.querySelector("#libraryView");
@@ -15,16 +16,20 @@ function preventGestureZoom() {
 
 async function start() {
   preventGestureZoom();
+  const metronome = createMetronome();
   const library = createLibrary({
     onOpen: async (pdf) => {
-      libraryView.hidden = true;
+      libraryView.classList.remove("is-active");
+      libraryView.setAttribute("aria-hidden", "true");
       history.pushState({ reader: true }, "");
       await viewer.open(pdf.id);
     }
   });
   const viewer = createViewer({
     onBack: async () => {
-      libraryView.hidden = false;
+      metronome.stop();
+      libraryView.classList.add("is-active");
+      libraryView.setAttribute("aria-hidden", "false");
       if (history.state && history.state.reader) {
         history.replaceState({}, "");
       }
@@ -52,7 +57,7 @@ async function start() {
   }
 
   window.addEventListener("popstate", () => {
-    if (!document.querySelector("#readerView").hidden) {
+    if (document.querySelector("#readerView").classList.contains("is-active")) {
       document.querySelector("#backButton").click();
     }
   });

@@ -11,7 +11,7 @@
 </head>
 <body>
   <main id="app">
-    <section id="libraryView" class="view library-view" aria-labeWlledby="libraryTitle">
+    <section id="libraryView" class="view library-view is-active" aria-labelledby="libraryTitle">
       <header class="library-header">
         <div>
           <h1 id="libraryTitle">Sheet Music</h1>
@@ -29,7 +29,7 @@
       <ul id="pdfList" class="pdf-list" aria-label="Sheet music library"></ul>
     </section>
 
-    <section id="readerView" class="view reader-view" aria-label="PDF reader" hidden>
+    <section id="readerView" class="view reader-view" aria-label="PDF reader" aria-hidden="true">
       <div id="pageContainer" class="page-container">
         <canvas id="pdfCanvas" aria-label="Current sheet music page"></canvas>
         <canvas id="inkCanvas" aria-hidden="true"></canvas>
@@ -47,6 +47,50 @@
           <button id="nextButton" class="button icon-button" type="button" aria-label="Next page">›</button>
         </div>
       </header>
+      <details id="metronomePanel" class="metronome-panel">
+        <summary class="metronome-summary">
+          <span>Metronome</span>
+          <span id="metronomeStatus" class="metronome-status">Stopped</span>
+        </summary>
+        <div class="metronome-controls">
+          <div class="tempo-row">
+            <label class="tempo-label" for="bpmSlider">Tempo <output id="bpmValue">96 BPM</output></label>
+            <div class="tempo-adjust">
+              <button id="bpmDown" class="tempo-adjust-button" type="button" aria-label="Decrease tempo">−</button>
+              <input id="bpmSlider" type="range" min="30" max="300" step="1" value="96" aria-label="Tempo, beats per minute">
+              <button id="bpmUp" class="tempo-adjust-button" type="button" aria-label="Increase tempo">+</button>
+            </div>
+          </div>
+
+          <div class="metronome-row">
+            <button id="metronomeToggle" class="button button-primary metronome-toggle" type="button">Start</button>
+            <button id="tapTempo" class="button tap-tempo-button" type="button">Tap tempo</button>
+            <span id="beatIndicator" class="beat-indicator" aria-label="Beat indicator"></span>
+          </div>
+
+          <label class="setting-label" for="timeSignature">Time signature</label>
+          <div class="signature-row">
+            <select id="timeSignature">
+              <option value="2/4">2/4</option>
+              <option value="3/4">3/4</option>
+              <option value="4/4" selected>4/4</option>
+              <option value="5/4">5/4</option>
+              <option value="6/8">6/8</option>
+              <option value="custom">Custom</option>
+            </select>
+            <label id="customBeatsField" class="custom-beats-field" for="customBeats" hidden>
+              Beats
+              <input id="customBeats" type="number" min="1" max="16" step="1" value="4" inputmode="numeric">
+            </label>
+          </div>
+
+          <label class="setting-label volume-label" for="metronomeVolume">
+            Volume <output id="volumeValue">70%</output>
+          </label>
+          <input id="metronomeVolume" class="volume-slider" type="range" min="0" max="1" step="0.01" value="0.7" aria-label="Metronome volume">
+          <p id="metronomeMessage" class="metronome-message" role="status" aria-live="polite"></p>
+        </div>
+      </details>
       <p id="readerMessage" class="reader-message" role="status" aria-live="polite"></p>
     </section>
   </main>

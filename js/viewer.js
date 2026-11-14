@@ -211,7 +211,8 @@ export function createViewer({ onBack }) {
 
   async function open(pdfId) {
     await closeDocument();
-    readerView.hidden = false;
+    readerView.classList.add("is-active");
+    readerView.setAttribute("aria-hidden", "false");
     setMessage("Opening PDF…");
     try {
       const record = await getPdf(pdfId);
@@ -308,13 +309,14 @@ export function createViewer({ onBack }) {
     try {
       await closeDocument();
     } finally {
-      readerView.hidden = true;
+      readerView.classList.remove("is-active");
+      readerView.setAttribute("aria-hidden", "true");
       await onBack();
     }
   });
 
   document.addEventListener("keydown", (event) => {
-    if (readerView.hidden) return;
+    if (!readerView.classList.contains("is-active")) return;
     if (event.key === "ArrowLeft") navigate(-1);
     if (event.key === "ArrowRight") navigate(1);
     if (event.key === "Escape") document.querySelector("#backButton").click();
