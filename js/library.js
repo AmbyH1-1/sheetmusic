@@ -96,12 +96,13 @@ export function createLibrary({ onOpen }) {
     const errors = [];
     for (const file of files) {
       try {
-        const header = new Uint8Array(await file.slice(0, 1024).arrayBuffer());
+        const buffer = await file.arrayBuffer();
+        const header = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 1024));
         const signature = String.fromCharCode(...header);
         if (!signature.includes("%PDF-")) {
           throw new Error(`${file.name} is not a valid PDF file.`);
         }
-        await addPdf(file, file.name.replace(/\.pdf$/i, ""));
+        await addPdf(buffer, file.name.replace(/\.pdf$/i, ""));
         imported += 1;
       } catch (error) {
         errors.push(error.message);

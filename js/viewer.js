@@ -220,15 +220,23 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
     readerView.setAttribute("aria-hidden", "false");
     setMessage("Opening PDF…");
     try {
-      const record = await getPdf(pdfId);
+      let record;
+      try {
+        record = await getPdf(pdfId);
+      } catch (error) {
+        throw new Error(`Could not read PDF from storage: ${error.message}`);
+      }
       if (!record) throw new Error("This PDF is no longer in the library.");
-      if (!record.blob || typeof record.blob.arrayBuffer !== "function") {
-        throw new Error("The stored PDF data is missing or invalid.");
+      if ("blob" in record) {
+        throw new Error("This PDF uses the old storage format. Please delete it and re-import it from the Files app.");
+      }
+      if (!(record.data instanceof ArrayBuffer)) {
+        throw new Error("The stored PDF data is missing or invalid. Please re-import this PDF from the Files app.");
       }
 
       currentPdf = record;
       const pdfjsLib = await loadPdfJs();
-      const data = new Uint8Array(await record.blob.arrayBuffer());
+      const data = new Uint8Array(record.data.slice(0));
       loadingTask = pdfjsLib.getDocument({ data });
       pdfDocument = await loadingTask.promise;
       currentPdf.pageCount = pdfDocument.numPages;

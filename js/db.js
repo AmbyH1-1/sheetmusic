@@ -59,12 +59,15 @@ function makeId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export async function addPdf(blob, name) {
+export async function addPdf(data, name) {
+  if (!(data instanceof ArrayBuffer)) {
+    throw new TypeError("PDF data must be an ArrayBuffer.");
+  }
   const db = await openDatabase();
   const pdf = {
     id: makeId(),
     name,
-    blob,
+    data,
     addedAt: Date.now(),
     lastOpenedAt: null,
     lastPage: 1,
