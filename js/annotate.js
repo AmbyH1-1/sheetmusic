@@ -11,6 +11,9 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
   const message = document.querySelector("#annotationMessage");
   const widthInput = document.querySelector("#annotationWidth");
   const widthValue = document.querySelector("#annotationWidthValue");
+  const opacityControl = document.querySelector("#highlighterOpacityControl");
+  const opacityInput = document.querySelector("#highlighterOpacity");
+  const opacityValue = document.querySelector("#highlighterOpacityValue");
   const undoButton = document.querySelector("#annotationUndo");
   const redoButton = document.querySelector("#annotationRedo");
   const fingerInput = document.querySelector("#allowFingerDrawing");
@@ -24,6 +27,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
   let currentTool = "pen";
   let currentColor = "#17191f";
   let thickness = Number(widthInput.value);
+  let highlighterOpacity = 0.35;
   let allowFingerDrawing = false;
   let strokes = [];
   let undoStack = [];
@@ -44,11 +48,19 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     redoButton.disabled = redoStack.length === 0;
   }
 
+  function getStrokeOpacity(stroke) {
+    if (Number.isFinite(stroke.opacity)) {
+      return Math.min(1, Math.max(0, stroke.opacity));
+    }
+    return stroke.tool === "highlighter" ? 0.35 : 1;
+  }
+
   function cloneStrokes(items) {
     return items.map((stroke) => ({
       tool: stroke.tool,
       color: stroke.color,
       width: stroke.width,
+      opacity: getStrokeOpacity(stroke),
       points: stroke.points.map((point) => ({
         x: point.x,
         y: point.y,
@@ -116,7 +128,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
       0
     );
     context.globalCompositeOperation = "source-over";
-    context.globalAlpha = stroke.tool === "highlighter" ? 0.34 : 1;
+    context.globalAlpha = getStrokeOpacity(stroke);
     context.strokeStyle = stroke.color;
     context.fillStyle = stroke.color;
     context.lineCap = "round";
@@ -147,6 +159,23 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
 
   function drawStroke(stroke) {
     if (!stroke.points.length) return;
+    if (stroke.tool === "highlighter") {
+      const size = getCanvasSize();
+      if (!size) return;
+      prepareStroke(stroke, size);
+      context.lineWidth = Math.max(0.5, stroke.width * size.width);
+      context.beginPath();
+      context.moveTo(stroke.points[0].x * size.width, stroke.points[0].y * size.height);
+      if (stroke.points.length === 1) {
+        context.lineTo(stroke.points[0].x * size.width + 0.01, stroke.points[0].y * size.height);
+      } else {
+        for (let index = 1; index < stroke.points.length; index += 1) {
+          context.lineTo(stroke.points[index].x * size.width, stroke.points[index].y * size.height);
+        }
+      }
+      context.stroke();
+      return;
+    }
     if (stroke.points.length === 1) {
       drawDot(stroke, stroke.points[0]);
       return;
@@ -225,19 +254,22 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
   }
 
   function appendPoint(event) {
-    if (!currentStroke) return;
+    if (!currentStroke) return false;
     const point = makePoint(event);
-    if (!point) return;
+    if (!point) return false;
     const previous = currentStroke.points[currentStroke.points.length - 1];
-    if (previous && previous.x === point.x && previous.y === point.y) return;
+    if (previous && previous.x === point.x && previous.y === point.y) return false;
     currentStroke.points.push(point);
     if (currentStroke.tool === "eraser") {
       eraseAt(point);
+    } else if (currentStroke.tool === "highlighter") {
+      return true;
     } else if (previous) {
       drawSegment(currentStroke, previous, point);
     } else {
       drawDot(currentStroke, point);
     }
+    return true;
   }
 
   function appendPointerSamples(event) {
@@ -248,7 +280,11 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     if (!lastSample || lastSample.clientX !== event.clientX || lastSample.clientY !== event.clientY) {
       samples.push(event);
     }
-    for (const sample of samples) appendPoint(sample);
+    let changed = false;
+    for (const sample of samples) {
+      changed = appendPoint(sample) || changed;
+    }
+    if (changed && currentStroke && currentStroke.tool === "highlighter") redraw();
   }
 
   function finishStroke() {
@@ -296,6 +332,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
       tool: currentTool,
       color: currentColor,
       width: (thickness * widthFactor) / size.width,
+      opacity: currentTool === "highlighter" ? highlighterOpacity : 1,
       points: []
     };
     if (currentTool === "eraser") currentErasures = new Set();
@@ -318,6 +355,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
 
   function selectTool(tool) {
     currentTool = tool;
+    opacityControl.hidden = tool !== "highlighter";
     for (const button of toolButtons) {
       const selected = button.dataset.annotationTool === tool;
       button.classList.toggle("is-selected", selected);
@@ -462,6 +500,16 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     widthValue.value = `${thickness} px`;
     widthValue.textContent = `${thickness} px`;
   });
+  opacityInput.addEventListener("input", () => {
+    highlighterOpacity = Number(opacityInput.value) / 100;
+    opacityValue.value = `${opacityInput.value}%`;
+    opacityValue.textContent = `${opacityInput.value}%`;
+  });
+  opacityInput.addEventListener("change", () => {
+    setSetting("highlighterOpacity", highlighterOpacity).catch((error) => {
+      setMessage(`Could not save highlighter opacity: ${error.message}`);
+    });
+  });
   undoButton.addEventListener("click", undo);
   redoButton.addEventListener("click", redo);
   document.querySelector("#annotationClear").addEventListener("click", clearPage);
@@ -477,6 +525,16 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     fingerInput.checked = allowFingerDrawing;
   }).catch((error) => {
     setMessage(`Could not load finger drawing setting: ${error.message}`);
+  });
+
+  getSetting("highlighterOpacity", 0.35).then((saved) => {
+    if (Number.isFinite(saved)) highlighterOpacity = Math.min(1, Math.max(0.1, saved));
+    const percent = Math.round(highlighterOpacity * 100);
+    opacityInput.value = String(percent);
+    opacityValue.value = `${percent}%`;
+    opacityValue.textContent = `${percent}%`;
+  }).catch((error) => {
+    setMessage(`Could not load highlighter opacity: ${error.message}`);
   });
 
   window.addEventListener("resize", redraw);

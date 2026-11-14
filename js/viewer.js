@@ -26,6 +26,15 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
   const toolbar = document.querySelector("#readerToolbar");
   const titleElement = document.querySelector("#readerTitle");
   const pageLabel = document.querySelector("#pageLabel");
+  const pageJumpPanel = document.querySelector("#pageJumpPanel");
+  const pageJumpClose = document.querySelector("#pageJumpClose");
+  const pageJumpForm = document.querySelector("#pageJumpForm");
+  const pageJumpInput = document.querySelector("#pageJumpInput");
+  const pageJumpTotal = document.querySelector("#pageJumpTotal");
+  const pageJumpSlider = document.querySelector("#pageJumpSlider");
+  const pageJumpSliderValue = document.querySelector("#pageJumpSliderValue");
+  const pageThumbnailGrid = document.querySelector("#pageThumbnailGrid");
+  const pageJumpMessage = document.querySelector("#pageJumpMessage");
   const readerMessage = document.querySelector("#readerMessage");
   const leftZone = document.querySelector("#previousZone");
   const rightZone = document.querySelector("#nextZone");
@@ -41,6 +50,15 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
   let zoneFraction = 0.3;
   let hideTimer = null;
   let renderSequence = 0;
+  let sliderDragging = false;
+  let thumbnailObserver = null;
+  let thumbnailRenderTask = null;
+  let thumbnailRenderQueue = Promise.resolve();
+  let thumbnailGeneration = 0;
+  let thumbnailsInitialized = false;
+  let thumbnailCache = new Map();
+  let thumbnailButtons = new Map();
+  let currentThumbnailButton = null;
 
   function setMessage(text) {
     readerMessage.textContent = text;
@@ -48,14 +66,183 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
 
   function updatePageLabel() {
     pageLabel.textContent = pdfDocument ? `${currentPage} / ${pdfDocument.numPages}` : "— / —";
+    pageLabel.disabled = !pdfDocument;
     document.querySelector("#previousButton").disabled = isAnnotating() || !pdfDocument || currentPage <= 1;
     document.querySelector("#nextButton").disabled = isAnnotating() || !pdfDocument || currentPage >= pdfDocument.numPages;
+    updatePageJumpControls();
+  }
+
+  function updatePageJumpControls() {
+    const pageCount = pdfDocument ? pdfDocument.numPages : 1;
+    pageJumpInput.max = String(pageCount);
+    pageJumpTotal.textContent = `of ${pdfDocument ? pageCount : "—"}`;
+    pageJumpSlider.max = String(pageCount);
+    if (!sliderDragging) {
+      pageJumpInput.value = String(currentPage);
+      pageJumpSlider.value = String(currentPage);
+      pageJumpSliderValue.value = String(currentPage);
+      pageJumpSliderValue.textContent = String(currentPage);
+    }
+    const nextThumbnailButton = thumbnailButtons.get(currentPage) || null;
+    if (currentThumbnailButton !== nextThumbnailButton) {
+      if (currentThumbnailButton) {
+        currentThumbnailButton.classList.remove("is-current");
+        currentThumbnailButton.removeAttribute("aria-current");
+      }
+      currentThumbnailButton = nextThumbnailButton;
+      if (currentThumbnailButton) {
+        currentThumbnailButton.classList.add("is-current");
+        currentThumbnailButton.setAttribute("aria-current", "page");
+      }
+    }
+  }
+
+  function setPageJumpMessage(text) {
+    pageJumpMessage.textContent = text;
+  }
+
+  function openPagePanel() {
+    if (!pdfDocument) return;
+    pageJumpPanel.hidden = false;
+    pageLabel.setAttribute("aria-expanded", "true");
+    window.clearTimeout(hideTimer);
+    toolbar.classList.remove("is-hidden");
+    setPageJumpMessage("");
+    updatePageJumpControls();
+    ensurePageThumbnails();
+  }
+
+  function closePagePanel() {
+    pageJumpPanel.hidden = true;
+    pageLabel.setAttribute("aria-expanded", "false");
+    sliderDragging = false;
+    if (readerView.classList.contains("is-active")) showToolbar();
+  }
+
+  function togglePagePanel() {
+    if (pageJumpPanel.hidden) openPagePanel();
+    else closePagePanel();
+  }
+
+  function clearPageThumbnails() {
+    thumbnailGeneration += 1;
+    if (thumbnailObserver) {
+      thumbnailObserver.disconnect();
+      thumbnailObserver = null;
+    }
+    if (thumbnailRenderTask) {
+      thumbnailRenderTask.cancel();
+      thumbnailRenderTask = null;
+    }
+    thumbnailCache.clear();
+    thumbnailButtons.clear();
+    currentThumbnailButton = null;
+    pageThumbnailGrid.replaceChildren();
+    thumbnailsInitialized = false;
+  }
+
+  function queueThumbnail(pageNumber, canvas, generation) {
+    thumbnailRenderQueue = thumbnailRenderQueue.then(async () => {
+      if (
+        generation !== thumbnailGeneration ||
+        !pdfDocument ||
+        !canvas.isConnected ||
+        thumbnailCache.has(pageNumber)
+      ) return;
+
+      const page = await loadPage(pageNumber);
+      if (generation !== thumbnailGeneration || !canvas.isConnected) return;
+      const baseViewport = page.getViewport({ scale: 1 });
+      const scale = 120 / baseViewport.width;
+      const viewport = page.getViewport({ scale });
+      canvas.width = Math.max(1, Math.round(viewport.width));
+      canvas.height = Math.max(1, Math.round(viewport.height));
+      const task = page.render({
+        canvasContext: canvas.getContext("2d"),
+        viewport
+      });
+      thumbnailRenderTask = task;
+      try {
+        await task.promise;
+        if (generation === thumbnailGeneration && canvas.isConnected) {
+          thumbnailCache.set(pageNumber, canvas);
+        }
+      } finally {
+        if (thumbnailRenderTask === task) thumbnailRenderTask = null;
+      }
+    }).catch((error) => {
+      if (generation === thumbnailGeneration && error.name !== "RenderingCancelledException") {
+        setPageJumpMessage(`Could not render page ${pageNumber} thumbnail: ${error.message}`);
+      }
+    });
+  }
+
+  function ensurePageThumbnails() {
+    if (!pdfDocument || thumbnailsInitialized) return;
+    thumbnailsInitialized = true;
+    const generation = thumbnailGeneration;
+    const fragment = document.createDocumentFragment();
+    const canvases = [];
+
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+      const button = document.createElement("button");
+      button.className = "page-thumbnail";
+      button.type = "button";
+      button.setAttribute("aria-label", `Go to page ${pageNumber}`);
+      button.dataset.pageNumber = String(pageNumber);
+      button.addEventListener("click", () => jumpToPage(pageNumber));
+
+      const canvas = document.createElement("canvas");
+      canvas.width = 120;
+      canvas.height = 160;
+      canvas.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span");
+      label.className = "page-thumbnail-label";
+      label.textContent = String(pageNumber);
+      button.append(canvas, label);
+      fragment.append(button);
+      thumbnailButtons.set(pageNumber, button);
+      canvases.push({ pageNumber, button, canvas });
+    }
+
+    pageThumbnailGrid.replaceChildren(fragment);
+    updatePageJumpControls();
+    if ("IntersectionObserver" in window) {
+      const observer = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const button = entry.target;
+          const pageNumber = Number(button.dataset.pageNumber);
+          const canvas = button.querySelector("canvas");
+          observer.unobserve(button);
+          queueThumbnail(pageNumber, canvas, generation);
+        }
+      }, {
+        root: pageThumbnailGrid,
+        rootMargin: "140px"
+      });
+      thumbnailObserver = observer;
+      for (const item of canvases) thumbnailObserver.observe(item.button);
+    } else {
+      for (const item of canvases) {
+        queueThumbnail(item.pageNumber, item.canvas, generation);
+      }
+    }
+  }
+
+  function jumpToPage(pageNumber, closePanel = false) {
+    if (!pdfDocument || !Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > pdfDocument.numPages) {
+      return;
+    }
+    if (closePanel) closePagePanel();
+    showToolbar();
+    goToPage(pageNumber);
   }
 
   function showToolbar() {
     toolbar.classList.remove("is-hidden");
     window.clearTimeout(hideTimer);
-    if (isAnnotating()) return;
+    if (isAnnotating() || !pageJumpPanel.hidden) return;
     hideTimer = window.setTimeout(() => toolbar.classList.add("is-hidden"), 3200);
   }
 
@@ -253,6 +440,12 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
 
   async function closeDocument() {
     renderSequence += 1;
+    window.clearTimeout(hideTimer);
+    hideTimer = null;
+    pageJumpPanel.hidden = true;
+    pageLabel.setAttribute("aria-expanded", "false");
+    sliderDragging = false;
+    clearPageThumbnails();
     try {
       if (activeRender) activeRender.cancel();
     } catch (error) {
@@ -306,6 +499,65 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
     }
   }
 
+  function handlePagePanelOutside(event) {
+    if (pageJumpPanel.hidden) return;
+    const target = event.target;
+    if (pageJumpPanel.contains(target) || pageLabel.contains(target)) return;
+    closePagePanel();
+    if (!target.closest("#readerToolbar, #metronomePanel, #annotationToolbar")) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  pageLabel.addEventListener("click", togglePagePanel);
+  pageJumpClose.addEventListener("click", closePagePanel);
+  pageJumpPanel.addEventListener("click", (event) => event.stopPropagation());
+  readerView.addEventListener("pointerdown", handlePagePanelOutside, true);
+
+  pageJumpForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const pageNumber = Number(pageJumpInput.value);
+    if (
+      !pdfDocument ||
+      !Number.isInteger(pageNumber) ||
+      pageNumber < 1 ||
+      pageNumber > pdfDocument.numPages
+    ) {
+      pageJumpInput.setCustomValidity(
+        `Enter a page number from 1 to ${pdfDocument ? pdfDocument.numPages : 1}.`
+      );
+      pageJumpInput.reportValidity();
+      setPageJumpMessage("Enter a page within the displayed range.");
+      return;
+    }
+    pageJumpInput.setCustomValidity("");
+    setPageJumpMessage("");
+    jumpToPage(pageNumber, true);
+  });
+
+  pageJumpInput.addEventListener("input", () => {
+    pageJumpInput.setCustomValidity("");
+    setPageJumpMessage("");
+  });
+  pageJumpSlider.addEventListener("pointerdown", () => {
+    sliderDragging = true;
+  });
+  pageJumpSlider.addEventListener("pointercancel", () => {
+    sliderDragging = false;
+    updatePageJumpControls();
+  });
+  pageJumpSlider.addEventListener("input", () => {
+    const pageNumber = Number(pageJumpSlider.value);
+    pageJumpSliderValue.value = String(pageNumber);
+    pageJumpSliderValue.textContent = String(pageNumber);
+    pageJumpInput.value = String(pageNumber);
+  });
+  pageJumpSlider.addEventListener("change", () => {
+    sliderDragging = false;
+    jumpToPage(Number(pageJumpSlider.value));
+  });
+
   document.querySelector("#previousButton").addEventListener("click", () => navigate(-1));
   document.querySelector("#nextButton").addEventListener("click", () => navigate(1));
   wireTap(leftZone, handleTapZone);
@@ -332,7 +584,10 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
     if (!readerView.classList.contains("is-active")) return;
     if (event.key === "ArrowLeft") navigate(-1);
     if (event.key === "ArrowRight") navigate(1);
-    if (event.key === "Escape") document.querySelector("#backButton").click();
+    if (event.key === "Escape") {
+      if (!pageJumpPanel.hidden) closePagePanel();
+      else document.querySelector("#backButton").click();
+    }
   });
 
   let resizeTimer = null;
