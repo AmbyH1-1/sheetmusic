@@ -402,11 +402,6 @@ h1 {
   -webkit-user-select: text;
 }
 
-.page-jump-form button {
-  min-width: 64px;
-  margin-left: auto;
-}
-
 .page-jump-slider-label {
   display: flex;
   align-items: center;
@@ -605,11 +600,16 @@ h1 {
 }
 
 .highlighter-opacity-control {
+  flex: 1 1 100%;
   display: grid;
   grid-template-columns: auto auto;
   align-items: center;
   gap: 2px 8px;
-  min-width: 160px;
+  min-width: min(100%, 220px);
+  min-height: 52px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: #252932;
   color: #dfe3ea;
   font-size: 13px;
 }
