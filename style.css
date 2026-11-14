@@ -925,24 +925,50 @@ h1 {
 }
 
 .beat-indicator {
-  flex: 0 0 18px;
-  width: 18px;
-  height: 18px;
-  border: 2px solid #707784;
+  display: flex;
+  flex: 0 1 180px;
+  flex-wrap: wrap;
+  align-content: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 24px;
+  max-width: 180px;
+}
+
+.beat-indicator-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border: 1px solid #707784;
   border-radius: 50%;
   background: #30343d;
 }
 
-.beat-indicator.is-active {
+.beat-indicator-dot[data-accent="strong"] {
+  border-color: #b6d2ff;
+}
+
+.beat-indicator-dot[data-accent="secondary"] {
+  border-color: #a9b5c8;
+  background: #454c58;
+}
+
+.beat-indicator-dot.is-active {
   border-color: #b6d2ff;
   background: var(--accent);
   box-shadow: 0 0 12px #6ea8feaa;
 }
 
-.beat-indicator[data-accent="true"].is-active {
+.beat-indicator-dot[data-accent="strong"].is-active {
   border-color: #ffe2a6;
   background: #ffba48;
   box-shadow: 0 0 12px #ffba48aa;
+}
+
+.beat-indicator-dot[data-accent="secondary"].is-active {
+  border-color: #ffd18a;
+  background: #e89a35;
+  box-shadow: 0 0 10px #e89a3588;
 }
 
 .signature-row {

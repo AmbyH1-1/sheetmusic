@@ -56,7 +56,31 @@ export function createMetronome() {
 
   function beatCount() {
     if (signature === "custom") return customBeats;
+    if (signature === "6/8") return 2;
     return Number(signature.split("/")[0]);
+  }
+
+  function updateBeatIndicator() {
+    const count = beatCount();
+    beatIndicator.replaceChildren();
+    for (let index = 0; index < count; index += 1) {
+      const beat = document.createElement("span");
+      beat.className = "beat-indicator-dot";
+      if (index === 0) beat.dataset.accent = "strong";
+      else if (signature === "6/4" && index === 3) beat.dataset.accent = "secondary";
+      beatIndicator.append(beat);
+    }
+    beatIndicator.setAttribute("aria-label", `${count}-beat indicator`);
+  }
+
+  function accentForBeat(index) {
+    if (index === 0) return "strong";
+    if (signature === "6/4" && index === 3) return "secondary";
+    return "normal";
+  }
+
+  function secondsPerBeat() {
+    return signature === "6/8" ? 90 / bpm : 60 / bpm;
   }
 
   function saveSettingsSoon() {
@@ -78,35 +102,40 @@ export function createMetronome() {
     status.textContent = text;
   }
 
-  function pulseIndicator(accent, activeRun) {
+  function pulseIndicator(beatIndexAtTime, activeRun) {
     if (!running || activeRun !== runId) return;
-    beatIndicator.dataset.accent = String(accent);
-    beatIndicator.classList.add("is-active");
+    const beat = beatIndicator.children[beatIndexAtTime];
+    if (!beat) return;
+    for (const dot of beatIndicator.children) dot.classList.remove("is-active");
+    beat.classList.add("is-active");
     window.clearTimeout(indicatorTimer);
     indicatorTimer = window.setTimeout(() => {
-      beatIndicator.classList.remove("is-active");
+      beat.classList.remove("is-active");
     }, 90);
   }
 
-  function scheduleClick(time, accent, activeRun) {
+  function scheduleClick(time, beatIndexAtTime, accent, activeRun) {
     if (!audioContext) return;
     const visualDelay = Math.max(0, (time - audioContext.currentTime) * 1000);
     // This timer only flashes the UI; the sound is scheduled on the audio clock below.
-    window.setTimeout(() => pulseIndicator(accent, activeRun), visualDelay);
+    window.setTimeout(() => pulseIndicator(beatIndexAtTime, activeRun), visualDelay);
     if (volume <= 0) return;
 
     const oscillator = audioContext.createOscillator();
     const gain = audioContext.createGain();
-    const peak = volume * (accent ? 0.8 : 0.55);
+    const peak = volume * (accent === "strong" ? 0.8 : accent === "secondary" ? 0.65 : 0.55);
 
     oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(accent ? 1760 : 1175, time);
+    oscillator.frequency.setValueAtTime(
+      accent === "strong" ? 1760 : accent === "secondary" ? 1450 : 1175,
+      time
+    );
     gain.gain.setValueAtTime(0.0001, time);
     gain.gain.linearRampToValueAtTime(peak, time + 0.002);
     gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.045);
     oscillator.connect(gain);
     gain.connect(audioContext.destination);
-    activeClicks.set(oscillator, gain);
+    activeClicks.set(oscillator, { gain, time });
     oscillator.onended = () => {
       activeClicks.delete(oscillator);
       oscillator.disconnect();
@@ -119,14 +148,14 @@ export function createMetronome() {
   function scheduleBeats() {
     if (!running || !audioContext || audioContext.state !== "running") return;
     const scheduleThrough = audioContext.currentTime + LOOKAHEAD_MS / 1000;
-    const secondsPerBeat = 60 / bpm;
+    const beatDuration = secondsPerBeat();
     const beatsPerBar = beatCount();
 
     while (nextBeatTime < scheduleThrough) {
-      const accent = beatIndex === 0;
-      scheduleClick(nextBeatTime, accent, runId);
+      const accent = accentForBeat(beatIndex);
+      scheduleClick(nextBeatTime, beatIndex, accent, runId);
       beatIndex = (beatIndex + 1) % beatsPerBar;
-      nextBeatTime += secondsPerBeat;
+      nextBeatTime += beatDuration;
     }
   }
 
@@ -194,7 +223,8 @@ export function createMetronome() {
       runId += 1;
       if (audioContext) {
         const now = audioContext.currentTime;
-        for (const [oscillator, gain] of activeClicks) {
+        for (const [oscillator, click] of activeClicks) {
+          const { gain } = click;
           gain.gain.cancelScheduledValues(now);
           gain.gain.setTargetAtTime(0, now, 0.005);
           oscillator.stop(now + 0.03);
@@ -202,7 +232,7 @@ export function createMetronome() {
       }
     }
     window.clearTimeout(indicatorTimer);
-    beatIndicator.classList.remove("is-active");
+    for (const dot of beatIndicator.children) dot.classList.remove("is-active");
     toggleButton.textContent = "Start";
     setStatus(paused ? "Paused" : "Stopped");
   }
@@ -214,12 +244,30 @@ export function createMetronome() {
     }
   }
 
+  function resetRunningBar() {
+    beatIndex = 0;
+    if (!running || !audioContext) return;
+
+    window.clearInterval(schedulerId);
+    runId += 1;
+    const now = audioContext.currentTime;
+    for (const [oscillator, click] of activeClicks) {
+      if (click.time < now) continue;
+      click.gain.gain.cancelScheduledValues(now);
+      click.gain.gain.setValueAtTime(0.0001, now);
+      oscillator.stop(now);
+    }
+    nextBeatTime = now + 0.05;
+    scheduleBeats();
+    schedulerId = window.setInterval(scheduleBeats, SCHEDULER_INTERVAL_MS);
+  }
+
   async function loadSettings() {
     try {
       const saved = await getSetting("metronome", null);
       if (saved && typeof saved === "object") {
         if (Number.isFinite(saved.bpm)) bpm = Math.min(MAX_BPM, Math.max(MIN_BPM, Math.round(saved.bpm)));
-        if (["2/4", "3/4", "4/4", "5/4", "6/8", "custom"].includes(saved.signature)) {
+        if (["2/4", "3/4", "4/4", "5/4", "6/4", "6/8", "custom"].includes(saved.signature)) {
           signature = saved.signature;
         }
         if (Number.isFinite(saved.customBeats)) {
@@ -228,6 +276,7 @@ export function createMetronome() {
         if (Number.isFinite(saved.volume)) volume = Math.min(1, Math.max(0, saved.volume));
       }
       updateControls();
+      updateBeatIndicator();
     } catch (error) {
       setMessage(`Could not load metronome settings: ${error.message}`);
     }
@@ -265,8 +314,9 @@ export function createMetronome() {
 
   timeSignature.addEventListener("change", () => {
     signature = timeSignature.value;
-    if (beatIndex >= beatCount()) beatIndex = 0;
     updateControls();
+    updateBeatIndicator();
+    resetRunningBar();
     saveSettingsSoon();
   });
   customBeatsInput.addEventListener("input", () => {
@@ -274,6 +324,8 @@ export function createMetronome() {
     if (!Number.isFinite(value)) return;
     customBeats = Math.min(16, Math.max(1, Math.round(value)));
     customBeatsInput.value = String(customBeats);
+    updateBeatIndicator();
+    resetRunningBar();
     saveSettingsSoon();
   });
   volumeSlider.addEventListener("input", () => {
@@ -295,6 +347,7 @@ export function createMetronome() {
   });
 
   updateControls();
+  updateBeatIndicator();
   loadSettings();
 
   return {
