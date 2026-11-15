@@ -1,5 +1,5 @@
 // Bump this cache version and the visible application version on every deploy.
-const CACHE_NAME = "sheetmusic-2.1.2";
+const CACHE_NAME = "sheetmusic-2.1.7";
 const APP_SHELL = [
   "./index.html",
   "./style.css",
@@ -7,8 +7,12 @@ const APP_SHELL = [
   "./js/app.js",
   "./js/annotate.js",
   "./js/db.js",
+  "./js/debug-overflow.js",
   "./js/library.js",
   "./js/metronome.js",
+  "./js/performance.js",
+  "./js/recorder.js",
+  "./js/trays.js",
   "./js/viewer.js",
   "./icons/icon.svg",
   "./icons/icon-180.png",

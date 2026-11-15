@@ -1,5 +1,7 @@
+import { perf } from "./performance.js";
+
 const DB_NAME = "sheetmusic-library";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const BACKUP_FORMAT_VERSION = 1;
 const BASE64_CHUNK_SIZE = 0x6000;
 
@@ -99,6 +101,23 @@ function validateStroke(stroke) {
   }
 }
 
+function makePdfMetadata(pdf) {
+  const dataBytes = pdf.data instanceof ArrayBuffer
+    ? pdf.data.byteLength
+    : typeof Blob !== "undefined" && pdf.blob instanceof Blob
+      ? pdf.blob.size
+      : 0;
+  return {
+    id: pdf.id,
+    name: pdf.name,
+    addedAt: pdf.addedAt,
+    lastOpenedAt: pdf.lastOpenedAt ?? null,
+    lastPage: pdf.lastPage ?? 1,
+    pageCount: pdf.pageCount ?? null,
+    dataBytes
+  };
+}
+
 function prepareBackup(backup) {
   if (!isRecord(backup) || backup.formatVersion !== BACKUP_FORMAT_VERSION) {
     throw new Error(`Unsupported backup format. Expected version ${BACKUP_FORMAT_VERSION}.`);
@@ -192,10 +211,13 @@ function openDatabase() {
   databasePromise = new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result;
       if (!db.objectStoreNames.contains("pdfs")) {
         db.createObjectStore("pdfs", { keyPath: "id" });
+      }
+      if (!db.objectStoreNames.contains("pdfMetadata")) {
+        db.createObjectStore("pdfMetadata", { keyPath: "id" });
       }
       // Keep ink and settings separate so the source PDF is never rewritten.
       if (!db.objectStoreNames.contains("annotations")) {
@@ -204,6 +226,16 @@ function openDatabase() {
       }
       if (!db.objectStoreNames.contains("settings")) {
         db.createObjectStore("settings", { keyPath: "key" });
+      }
+      if (event.oldVersion < 2) {
+        const pdfCursor = request.transaction.objectStore("pdfs").openCursor();
+        const metadataStore = request.transaction.objectStore("pdfMetadata");
+        pdfCursor.onsuccess = () => {
+          const cursor = pdfCursor.result;
+          if (!cursor) return;
+          metadataStore.put(makePdfMetadata(cursor.value));
+          cursor.continue();
+        };
       }
     };
 
@@ -256,36 +288,41 @@ export async function addPdf(data, name) {
     lastPage: 1,
     pageCount: null
   };
-  const tx = db.transaction("pdfs", "readwrite");
+  const tx = db.transaction(["pdfs", "pdfMetadata"], "readwrite");
   const done = transactionDone(tx);
   tx.objectStore("pdfs").add(pdf);
+  tx.objectStore("pdfMetadata").add(makePdfMetadata(pdf));
   await done;
   return pdf;
 }
 
 export async function listPdfs() {
   const db = await openDatabase();
-  const tx = db.transaction("pdfs", "readonly");
+  const tx = db.transaction("pdfMetadata", "readonly");
   const done = transactionDone(tx);
-  const result = await requestResult(tx.objectStore("pdfs").getAll());
+  const result = await requestResult(tx.objectStore("pdfMetadata").getAll());
   await done;
   return result.sort((a, b) => b.addedAt - a.addedAt);
 }
 
 export async function getPdf(id) {
   const db = await openDatabase();
-  const tx = db.transaction("pdfs", "readonly");
+  const tx = db.transaction(["pdfs", "pdfMetadata"], "readonly");
   const done = transactionDone(tx);
-  const result = await requestResult(tx.objectStore("pdfs").get(id));
+  const [record, metadata] = await Promise.all([
+    requestResult(tx.objectStore("pdfs").get(id)),
+    requestResult(tx.objectStore("pdfMetadata").get(id))
+  ]);
   await done;
-  return result;
+  return record ? { ...record, ...metadata } : record;
 }
 
 export async function deletePdf(id) {
   const db = await openDatabase();
-  const tx = db.transaction(["pdfs", "annotations"], "readwrite");
+  const tx = db.transaction(["pdfs", "pdfMetadata", "annotations"], "readwrite");
   const done = transactionDone(tx);
   tx.objectStore("pdfs").delete(id);
+  tx.objectStore("pdfMetadata").delete(id);
   const index = tx.objectStore("annotations").index("pdfId");
   const cursorRequest = index.openCursor(IDBKeyRange.only(id));
   cursorRequest.onsuccess = () => {
@@ -300,20 +337,20 @@ export async function deletePdf(id) {
 
 export async function renamePdf(id, name) {
   const db = await openDatabase();
-  const tx = db.transaction("pdfs", "readwrite");
+  const tx = db.transaction("pdfMetadata", "readwrite");
   const done = transactionDone(tx);
-  const store = tx.objectStore("pdfs");
+  const store = tx.objectStore("pdfMetadata");
   const request = store.get(id);
   let missingPdf = false;
   request.onsuccess = () => {
-    const pdf = request.result;
-    if (!pdf) {
+    const metadata = request.result;
+    if (!metadata) {
       missingPdf = true;
       tx.abort();
       return;
     }
-    pdf.name = name;
-    store.put(pdf);
+    metadata.name = name;
+    store.put(metadata);
   };
   request.onerror = () => tx.abort();
   try {
@@ -328,23 +365,24 @@ export async function renamePdf(id, name) {
 }
 
 export async function saveLastPage(id, page, pageCount) {
+  const saveStartedAt = perf.begin();
   const db = await openDatabase();
-  const tx = db.transaction("pdfs", "readwrite");
+  const tx = db.transaction("pdfMetadata", "readwrite");
   const done = transactionDone(tx);
-  const store = tx.objectStore("pdfs");
+  const store = tx.objectStore("pdfMetadata");
   const request = store.get(id);
   let missingPdf = false;
   request.onsuccess = () => {
-    const pdf = request.result;
-    if (!pdf) {
+    const metadata = request.result;
+    if (!metadata) {
       missingPdf = true;
       tx.abort();
       return;
     }
-    pdf.lastPage = page;
-    pdf.pageCount = pageCount;
-    pdf.lastOpenedAt = Date.now();
-    store.put(pdf);
+    metadata.lastPage = page;
+    metadata.pageCount = pageCount;
+    metadata.lastOpenedAt = Date.now();
+    store.put(metadata);
   };
   request.onerror = () => tx.abort();
   try {
@@ -355,6 +393,7 @@ export async function saveLastPage(id, page, pageCount) {
     }
     throw error;
   }
+  perf.time("Last-page metadata save", saveStartedAt);
 }
 
 export async function saveAnnotations(pdfId, pageNumber, strokes) {
@@ -404,26 +443,30 @@ export async function initializeDatabase() {
 
 export async function exportBackup(onProgress) {
   const db = await openDatabase();
-  const tx = db.transaction(["pdfs", "annotations", "settings"], "readonly");
+  const tx = db.transaction(["pdfs", "pdfMetadata", "annotations", "settings"], "readonly");
   const done = transactionDone(tx);
-  const [pdfs, annotations, settings] = await Promise.all([
+  const [pdfs, pdfMetadata, annotations, settings] = await Promise.all([
     requestResult(tx.objectStore("pdfs").getAll()),
+    requestResult(tx.objectStore("pdfMetadata").getAll()),
     requestResult(tx.objectStore("annotations").getAll()),
     requestResult(tx.objectStore("settings").getAll())
   ]);
   await done;
 
+  const metadataById = new Map(pdfMetadata.map((metadata) => [metadata.id, metadata]));
   const totalBytes = pdfs.reduce((total, pdf) => {
+    const metadata = metadataById.get(pdf.id) || makePdfMetadata(pdf);
     if (!(pdf.data instanceof ArrayBuffer)) {
-      throw new Error(`"${pdf.name}" uses an unsupported PDF storage format. Re-import it before backing up.`);
+      throw new Error(`"${metadata.name}" uses an unsupported PDF storage format. Re-import it before backing up.`);
     }
     return total + pdf.data.byteLength;
   }, 0);
   let completedBytes = 0;
   const backupPdfs = [];
   for (const pdf of pdfs) {
+    const metadata = metadataById.get(pdf.id) || makePdfMetadata(pdf);
     if (!hasPdfHeader(pdf.data)) {
-      throw new Error(`"${pdf.name}" does not contain valid PDF data.`);
+      throw new Error(`"${metadata.name}" does not contain valid PDF data.`);
     }
     const data = await encodeBase64(pdf.data, (chunkBytes) => {
       reportProgress(onProgress, {
@@ -435,12 +478,12 @@ export async function exportBackup(onProgress) {
     });
     backupPdfs.push({
       id: pdf.id,
-      name: pdf.name,
+      name: metadata.name,
       data,
-      addedAt: pdf.addedAt,
-      lastOpenedAt: pdf.lastOpenedAt ?? null,
-      lastPage: pdf.lastPage,
-      pageCount: pdf.pageCount ?? null
+      addedAt: metadata.addedAt,
+      lastOpenedAt: metadata.lastOpenedAt ?? null,
+      lastPage: metadata.lastPage,
+      pageCount: metadata.pageCount ?? null
     });
   }
 
@@ -506,10 +549,10 @@ export async function importBackup(backup, mode = "merge", onProgress) {
   let settingsToWrite = settings;
 
   if (mode === "merge") {
-    const readTx = db.transaction(["pdfs", "annotations", "settings"], "readonly");
+    const readTx = db.transaction(["pdfMetadata", "annotations", "settings"], "readonly");
     const readDone = transactionDone(readTx);
     const [existingPdfs, existingAnnotations, existingSettings] = await Promise.all([
-      requestResult(readTx.objectStore("pdfs").getAll()),
+      requestResult(readTx.objectStore("pdfMetadata").getAll()),
       requestResult(readTx.objectStore("annotations").getAll()),
       requestResult(readTx.objectStore("settings").getAll())
     ]);
@@ -523,17 +566,22 @@ export async function importBackup(backup, mode = "merge", onProgress) {
     settingsToWrite = settings.filter((setting) => !existingSettingKeys.has(setting.key));
   }
 
-  const tx = db.transaction(["pdfs", "annotations", "settings"], "readwrite");
+  const tx = db.transaction(["pdfs", "pdfMetadata", "annotations", "settings"], "readwrite");
   const done = transactionDone(tx);
   const pdfStore = tx.objectStore("pdfs");
+  const pdfMetadataStore = tx.objectStore("pdfMetadata");
   const annotationStore = tx.objectStore("annotations");
   const settingStore = tx.objectStore("settings");
   if (mode === "replace") {
     pdfStore.clear();
+    pdfMetadataStore.clear();
     annotationStore.clear();
     settingStore.clear();
   }
-  for (const pdf of pdfsToWrite) pdfStore.put(pdf);
+  for (const pdf of pdfsToWrite) {
+    pdfStore.put(pdf);
+    pdfMetadataStore.put(makePdfMetadata(pdf));
+  }
   for (const annotation of annotationsToWrite) annotationStore.put(annotation);
   for (const setting of settingsToWrite) settingStore.put(setting);
   reportProgress(onProgress, {

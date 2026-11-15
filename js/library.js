@@ -6,6 +6,7 @@ import {
   listPdfs,
   renamePdf
 } from "./db.js";
+import { perf } from "./performance.js";
 
 export function createLibrary({ onOpen }) {
   const importButton = document.querySelector("#importButton");
@@ -155,11 +156,14 @@ export function createLibrary({ onOpen }) {
     const openButton = document.createElement("button");
     openButton.className = "pdf-open";
     openButton.type = "button";
+    openButton.title = pdf.name;
+    openButton.setAttribute("aria-label", `Open ${pdf.name}`);
     openButton.addEventListener("click", () => onOpen(pdf));
 
     const title = document.createElement("span");
     title.className = "pdf-name";
     title.textContent = pdf.name;
+    title.title = pdf.name;
 
     const metadata = document.createElement("span");
     metadata.className = "pdf-meta";
@@ -174,6 +178,7 @@ export function createLibrary({ onOpen }) {
     renameButton.type = "button";
     renameButton.textContent = "Rename";
     renameButton.setAttribute("aria-label", `Rename ${pdf.name}`);
+    renameButton.title = pdf.name;
     renameButton.addEventListener("click", async () => {
       const proposedName = window.prompt("New title", pdf.name);
       if (proposedName === null) return;
@@ -212,9 +217,24 @@ export function createLibrary({ onOpen }) {
   }
 
   async function refresh() {
+    const listStartedAt = perf.begin();
     const pdfs = await listPdfs();
+    perf.time("Library IndexedDB list", listStartedAt, `${pdfs.length} records`);
+    const renderStartedAt = perf.begin();
     pdfList.replaceChildren(...pdfs.map(createPdfCard));
     emptyLibrary.hidden = pdfs.length > 0;
+    perf.time("Library list render", renderStartedAt, `${pdfs.length} records`);
+    if (perf.enabled) {
+      const storedBufferBytes = pdfs.reduce((total, pdf) => (
+        total + (Number.isFinite(pdf.dataBytes) ? pdf.dataBytes : 0)
+      ), 0);
+      perf.memory({
+        liveCanvases: document.querySelectorAll("canvas").length,
+        cachedPageBitmaps: 0,
+        thumbnailCacheEntries: 0,
+        storedBufferBytes
+      });
+    }
     return pdfs;
   }
 
@@ -263,8 +283,8 @@ export function createLibrary({ onOpen }) {
     try {
       const pdfs = await listPdfs();
       const estimatedBytes = pdfs.reduce((total, pdf) => {
-        if (!(pdf.data instanceof ArrayBuffer)) return total;
-        return total + Math.ceil(pdf.data.byteLength * 4 / 3);
+        if (!Number.isFinite(pdf.dataBytes)) return total;
+        return total + Math.ceil(pdf.dataBytes * 4 / 3);
       }, 0);
       if (
         estimatedBytes >= 50 * 1024 * 1024 &&

@@ -1,4 +1,5 @@
 import { getSetting, setSetting } from "./db.js";
+import { perf } from "./performance.js";
 
 const MIN_BPM = 30;
 const MAX_BPM = 300;
@@ -18,6 +19,7 @@ export function createMetronome() {
   const volumeSlider = document.querySelector("#metronomeVolume");
   const volumeValue = document.querySelector("#volumeValue");
   const status = document.querySelector("#metronomeStatus");
+  const summaryBpm = document.querySelector("#metronomeSummaryBpm");
   const message = document.querySelector("#metronomeMessage");
   const beatIndicator = document.querySelector("#beatIndicator");
 
@@ -33,9 +35,19 @@ export function createMetronome() {
   let beatIndex = 0;
   let running = false;
   let startPending = false;
+  let recordingActive = false;
+  let allowMetronomeDuringRecording = true;
   let startAttempt = 0;
   let runId = 0;
   let taps = [];
+  let scheduleWindowStartedAt = 0;
+  let scheduleLatenessTotal = 0;
+  let scheduleLatenessMax = 0;
+  let scheduleLatenessCount = 0;
+  let lastSchedulerTickAt = 0;
+  let schedulerJitterTotal = 0;
+  let schedulerJitterMax = 0;
+  let schedulerJitterCount = 0;
   const activeClicks = new Map();
 
   function setMessage(text) {
@@ -46,6 +58,8 @@ export function createMetronome() {
     bpmSlider.value = String(bpm);
     bpmValue.value = `${bpm} BPM`;
     bpmValue.textContent = `${bpm} BPM`;
+    summaryBpm.value = `${bpm} BPM`;
+    summaryBpm.textContent = `${bpm} BPM`;
     timeSignature.value = signature;
     customBeatsInput.value = String(customBeats);
     customBeatsField.hidden = signature !== "custom";
@@ -116,6 +130,12 @@ export function createMetronome() {
 
   function scheduleClick(time, beatIndexAtTime, accent, activeRun) {
     if (!audioContext) return;
+    if (perf.enabled) {
+      const lateness = Math.max(0, (audioContext.currentTime - time) * 1000);
+      scheduleLatenessTotal += lateness;
+      scheduleLatenessMax = Math.max(scheduleLatenessMax, lateness);
+      scheduleLatenessCount += 1;
+    }
     const visualDelay = Math.max(0, (time - audioContext.currentTime) * 1000);
     // This timer only flashes the UI; the sound is scheduled on the audio clock below.
     window.setTimeout(() => pulseIndicator(beatIndexAtTime, activeRun), visualDelay);
@@ -147,6 +167,37 @@ export function createMetronome() {
 
   function scheduleBeats() {
     if (!running || !audioContext || audioContext.state !== "running") return;
+    if (perf.enabled) {
+      const now = performance.now();
+      if (lastSchedulerTickAt) {
+        const jitter = Math.abs(now - lastSchedulerTickAt - SCHEDULER_INTERVAL_MS);
+        schedulerJitterTotal += jitter;
+        schedulerJitterMax = Math.max(schedulerJitterMax, jitter);
+        schedulerJitterCount += 1;
+      }
+      lastSchedulerTickAt = now;
+      if (now - scheduleWindowStartedAt >= 60000) {
+        perf.record(
+          "Metronome scheduling lateness (1 min avg / max)",
+          `${(scheduleLatenessTotal / Math.max(1, scheduleLatenessCount)).toFixed(3)} / ${scheduleLatenessMax.toFixed(3)}`,
+          "ms",
+          `${scheduleLatenessCount} clicks`
+        );
+        perf.record(
+          "Metronome scheduler jitter (1 min avg / max)",
+          `${(schedulerJitterTotal / Math.max(1, schedulerJitterCount)).toFixed(2)} / ${schedulerJitterMax.toFixed(2)}`,
+          "ms",
+          `${schedulerJitterCount} ticks`
+        );
+        scheduleWindowStartedAt = now;
+        scheduleLatenessTotal = 0;
+        scheduleLatenessMax = 0;
+        scheduleLatenessCount = 0;
+        schedulerJitterTotal = 0;
+        schedulerJitterMax = 0;
+        schedulerJitterCount = 0;
+      }
+    }
     const scheduleThrough = audioContext.currentTime + LOOKAHEAD_MS / 1000;
     const beatDuration = secondsPerBeat();
     const beatsPerBar = beatCount();
@@ -176,6 +227,14 @@ export function createMetronome() {
     runId += 1;
     beatIndex = 0;
     nextBeatTime = audioContext.currentTime + 0.05;
+    scheduleWindowStartedAt = perf.enabled ? performance.now() : 0;
+    lastSchedulerTickAt = 0;
+    scheduleLatenessTotal = 0;
+    scheduleLatenessMax = 0;
+    scheduleLatenessCount = 0;
+    schedulerJitterTotal = 0;
+    schedulerJitterMax = 0;
+    schedulerJitterCount = 0;
     setStatus("Playing");
     toggleButton.textContent = "Stop";
     setMessage("");
@@ -184,7 +243,12 @@ export function createMetronome() {
   }
 
   async function start() {
-    if (running || startPending) return;
+    if (running) return true;
+    if (startPending) return false;
+    if (recordingActive && !allowMetronomeDuringRecording) {
+      setMessage("The metronome is disabled during recording.");
+      return false;
+    }
     startPending = true;
     toggleButton.disabled = true;
     const attempt = ++startAttempt;
@@ -195,6 +259,7 @@ export function createMetronome() {
       if (context.state !== "running") {
         throw new Error("Audio could not start. Tap Start again to retry.");
       }
+      if (recordingActive && !allowMetronomeDuringRecording) return false;
       if (!running) startScheduler();
     } catch (error) {
       if (attempt === startAttempt) {
@@ -206,6 +271,7 @@ export function createMetronome() {
         toggleButton.disabled = false;
       }
     }
+    return running;
   }
 
   function stop({ paused = false } = {}) {
@@ -238,9 +304,33 @@ export function createMetronome() {
   }
 
   function handleAudioStateChange() {
-    if (running && audioContext.state !== "running") {
+    if (running && !recordingActive && audioContext.state !== "running") {
       stop({ paused: true });
       setMessage("Audio paused by the browser. Tap Start to resume.");
+    }
+  }
+
+  async function restoreAfterRecording() {
+    recordingActive = true;
+    try {
+      if (!audioContext) return;
+      if (audioContext.state === "closed") {
+        if (running) stop({ paused: true });
+        return;
+      }
+      if (audioContext.state === "running") await audioContext.suspend();
+      if (audioContext.state !== "closed") await audioContext.resume();
+    } catch (error) {
+      if (running) stop({ paused: true });
+      throw error;
+    } finally {
+      recordingActive = false;
+    }
+  }
+
+  async function resumeForRecording() {
+    if (audioContext && audioContext.state !== "closed" && audioContext.state !== "running") {
+      await audioContext.resume();
     }
   }
 
@@ -309,7 +399,9 @@ export function createMetronome() {
   tapButton.addEventListener("click", recordTap);
   toggleButton.addEventListener("click", () => {
     if (running) stop();
-    else start();
+    else if (recordingActive && !allowMetronomeDuringRecording) {
+      setMessage("The metronome is disabled during recording.");
+    } else start();
   });
 
   timeSignature.addEventListener("change", () => {
@@ -351,6 +443,15 @@ export function createMetronome() {
   loadSettings();
 
   return {
-    stop
+    stop,
+    pause: () => stop({ paused: true }),
+    resume: start,
+    isRunning: () => running,
+    setRecordingActive: (active, allowDuringRecording = true) => {
+      recordingActive = active;
+      allowMetronomeDuringRecording = allowDuringRecording;
+    },
+    restoreAfterRecording,
+    resumeForRecording
   };
 }

@@ -1,12 +1,18 @@
 import { getPdf, getSetting, saveLastPage } from "./db.js";
+import { perf } from "./performance.js";
+
+const PAGE_RENDER_CACHE_LIMIT = 3;
+const THUMBNAIL_CACHE_LIMIT = 12;
 
 let pdfjsPromise;
 
 function loadPdfJs() {
   if (!pdfjsPromise) {
+    const importStartedAt = perf.begin();
     const pdfModuleUrl = new URL("./pdfjs/pdf.mjs", document.baseURI).href;
     pdfjsPromise = import(pdfModuleUrl).then((pdfjsLib) => {
       pdfjsLib.GlobalWorkerOptions.workerSrc = "./pdfjs/pdf.worker.mjs";
+      perf.time("PDF.js module import", importStartedAt);
       return pdfjsLib;
     }).catch((error) => {
       pdfjsPromise = null;
@@ -16,7 +22,13 @@ function loadPdfJs() {
   return pdfjsPromise;
 }
 
-export function createViewer({ onBack, isAnnotating = () => false, onPageChange = async () => {} }) {
+export function createViewer({
+  onBack,
+  isAnnotating = () => false,
+  onPageChange = async () => {},
+  onPageJumpChange = () => {},
+  onToolbarShow = () => {}
+}) {
   const readerView = document.querySelector("#readerView");
   const pageContainer = document.querySelector("#pageContainer");
   const pdfCanvas = document.querySelector("#pdfCanvas");
@@ -48,17 +60,22 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
   let pageRenders = new Map();
   let activeRender = null;
   let zoneFraction = 0.3;
-  let hideTimer = null;
   let renderSequence = 0;
   let sliderDragging = false;
   let thumbnailObserver = null;
   let thumbnailRenderTask = null;
+  let thumbnailIdleCancel = null;
   let thumbnailRenderQueue = Promise.resolve();
   let thumbnailGeneration = 0;
   let thumbnailsInitialized = false;
   let thumbnailCache = new Map();
   let thumbnailButtons = new Map();
   let currentThumbnailButton = null;
+  let preloadHandle = null;
+  let preloadRenderTask = null;
+  let preloadCanvas = null;
+  let preloadSequence = 0;
+  let openingDocument = false;
 
   function setMessage(text) {
     readerMessage.textContent = text;
@@ -66,6 +83,9 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
 
   function updatePageLabel() {
     pageLabel.textContent = pdfDocument ? `${currentPage} / ${pdfDocument.numPages}` : "— / —";
+    pageLabel.title = pdfDocument
+      ? `Current page ${currentPage} of ${pdfDocument.numPages}. Tap to go to a page.`
+      : "Page number";
     pageLabel.disabled = !pdfDocument;
     document.querySelector("#previousButton").disabled = isAnnotating() || !pdfDocument || currentPage <= 1;
     document.querySelector("#nextButton").disabled = isAnnotating() || !pdfDocument || currentPage >= pdfDocument.numPages;
@@ -101,22 +121,23 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
     pageJumpMessage.textContent = text;
   }
 
-  function openPagePanel() {
+  function openPagePanel(notify = true) {
     if (!pdfDocument) return;
     pageJumpPanel.hidden = false;
     pageLabel.setAttribute("aria-expanded", "true");
-    window.clearTimeout(hideTimer);
-    toolbar.classList.remove("is-hidden");
     setPageJumpMessage("");
     updatePageJumpControls();
-    ensurePageThumbnails();
+    if (thumbnailsInitialized) observePendingThumbnails();
+    else ensurePageThumbnails();
+    if (notify) onPageJumpChange(true);
   }
 
-  function closePagePanel() {
+  function closePagePanel(notify = true) {
     pageJumpPanel.hidden = true;
     pageLabel.setAttribute("aria-expanded", "false");
     sliderDragging = false;
-    if (readerView.classList.contains("is-active")) showToolbar();
+    pauseThumbnailWork();
+    if (notify) onPageJumpChange(false);
   }
 
   function togglePagePanel() {
@@ -124,52 +145,138 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
     else closePagePanel();
   }
 
-  function clearPageThumbnails() {
+  function pauseThumbnailWork() {
     thumbnailGeneration += 1;
     if (thumbnailObserver) {
       thumbnailObserver.disconnect();
       thumbnailObserver = null;
     }
+    if (thumbnailIdleCancel) {
+      thumbnailIdleCancel();
+      thumbnailIdleCancel = null;
+    }
     if (thumbnailRenderTask) {
       thumbnailRenderTask.cancel();
       thumbnailRenderTask = null;
+    }
+  }
+
+  function clearPageThumbnails() {
+    pauseThumbnailWork();
+    for (const canvas of thumbnailCache.values()) {
+      canvas.width = 0;
+      canvas.height = 0;
     }
     thumbnailCache.clear();
     thumbnailButtons.clear();
     currentThumbnailButton = null;
     pageThumbnailGrid.replaceChildren();
     thumbnailsInitialized = false;
+    reportMemory();
   }
 
-  function queueThumbnail(pageNumber, canvas, generation) {
+  function createThumbnailPlaceholder() {
+    const placeholder = document.createElement("span");
+    placeholder.className = "page-thumbnail-placeholder";
+    placeholder.setAttribute("aria-hidden", "true");
+    return placeholder;
+  }
+
+  function runThumbnailWhenIdle(callback, generation) {
+    return new Promise((resolve, reject) => {
+      let completed = false;
+      let idleId = null;
+      let timeoutId = null;
+      const finish = (handler, value) => {
+        if (completed) return;
+        completed = true;
+        if (thumbnailIdleCancel === cancel) thumbnailIdleCancel = null;
+        handler(value);
+      };
+      const run = () => {
+        idleId = null;
+        timeoutId = null;
+        if (generation !== thumbnailGeneration) {
+          finish(resolve);
+          return;
+        }
+        Promise.resolve().then(callback).then(
+          (value) => finish(resolve, value),
+          (error) => finish(reject, error)
+        );
+      };
+      const cancel = () => {
+        if (idleId !== null && typeof window.cancelIdleCallback === "function") {
+          window.cancelIdleCallback(idleId);
+        }
+        if (timeoutId !== null) window.clearTimeout(timeoutId);
+        finish(resolve);
+      };
+
+      if (typeof window.requestIdleCallback === "function") {
+        idleId = window.requestIdleCallback(run, { timeout: 300 });
+      } else {
+        timeoutId = window.setTimeout(run, 40);
+      }
+      thumbnailIdleCancel = cancel;
+    });
+  }
+
+  function queueThumbnail(pageNumber, button, generation) {
     thumbnailRenderQueue = thumbnailRenderQueue.then(async () => {
       if (
         generation !== thumbnailGeneration ||
         !pdfDocument ||
-        !canvas.isConnected ||
+        !button.isConnected ||
         thumbnailCache.has(pageNumber)
       ) return;
 
-      const page = await loadPage(pageNumber);
-      if (generation !== thumbnailGeneration || !canvas.isConnected) return;
-      const baseViewport = page.getViewport({ scale: 1 });
-      const scale = 120 / baseViewport.width;
-      const viewport = page.getViewport({ scale });
-      canvas.width = Math.max(1, Math.round(viewport.width));
-      canvas.height = Math.max(1, Math.round(viewport.height));
-      const task = page.render({
-        canvasContext: canvas.getContext("2d"),
-        viewport
-      });
-      thumbnailRenderTask = task;
-      try {
-        await task.promise;
-        if (generation === thumbnailGeneration && canvas.isConnected) {
-          thumbnailCache.set(pageNumber, canvas);
+      await runThumbnailWhenIdle(async () => {
+        if (generation !== thumbnailGeneration || !pdfDocument || !button.isConnected) return;
+        const thumbnailStartedAt = perf.begin();
+        const page = await loadPage(pageNumber);
+        if (generation !== thumbnailGeneration || !button.isConnected) return;
+        const baseViewport = page.getViewport({ scale: 1 });
+        const viewport = page.getViewport({ scale: 120 / baseViewport.width });
+        const canvas = document.createElement("canvas");
+        canvas.setAttribute("aria-hidden", "true");
+        canvas.width = Math.max(1, Math.round(viewport.width));
+        canvas.height = Math.max(1, Math.round(viewport.height));
+        const placeholder = button.querySelector(".page-thumbnail-placeholder");
+        if (placeholder) placeholder.replaceWith(canvas);
+        else button.insertBefore(canvas, button.querySelector(".page-thumbnail-label"));
+        const task = page.render({
+          canvasContext: canvas.getContext("2d"),
+          viewport
+        });
+        thumbnailRenderTask = task;
+        try {
+          await task.promise;
+          if (generation === thumbnailGeneration && button.isConnected) {
+            thumbnailCache.set(pageNumber, canvas);
+            while (thumbnailCache.size > THUMBNAIL_CACHE_LIMIT) {
+              const [oldPage, oldCanvas] = thumbnailCache.entries().next().value;
+              thumbnailCache.delete(oldPage);
+              oldCanvas.width = 0;
+              oldCanvas.height = 0;
+              const oldButton = thumbnailButtons.get(oldPage);
+              if (oldButton && oldCanvas.isConnected) {
+                oldCanvas.replaceWith(createThumbnailPlaceholder());
+                if (thumbnailObserver) thumbnailObserver.observe(oldButton);
+              }
+            }
+            perf.time("Thumbnail generation", thumbnailStartedAt, `page ${pageNumber}`);
+            reportMemory();
+          }
+        } finally {
+          if (thumbnailRenderTask === task) thumbnailRenderTask = null;
+          if (!thumbnailCache.has(pageNumber)) {
+            canvas.width = 0;
+            canvas.height = 0;
+            if (canvas.isConnected) canvas.replaceWith(createThumbnailPlaceholder());
+          }
         }
-      } finally {
-        if (thumbnailRenderTask === task) thumbnailRenderTask = null;
-      }
+      }, generation);
     }).catch((error) => {
       if (generation === thumbnailGeneration && error.name !== "RenderingCancelledException") {
         setPageJumpMessage(`Could not render page ${pageNumber} thumbnail: ${error.message}`);
@@ -180,9 +287,7 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
   function ensurePageThumbnails() {
     if (!pdfDocument || thumbnailsInitialized) return;
     thumbnailsInitialized = true;
-    const generation = thumbnailGeneration;
     const fragment = document.createDocumentFragment();
-    const canvases = [];
 
     for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
       const button = document.createElement("button");
@@ -190,46 +295,53 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
       button.type = "button";
       button.setAttribute("aria-label", `Go to page ${pageNumber}`);
       button.dataset.pageNumber = String(pageNumber);
-      button.addEventListener("click", () => jumpToPage(pageNumber));
-
-      const canvas = document.createElement("canvas");
-      canvas.width = 120;
-      canvas.height = 160;
-      canvas.setAttribute("aria-hidden", "true");
+      button.append(createThumbnailPlaceholder());
       const label = document.createElement("span");
       label.className = "page-thumbnail-label";
       label.textContent = String(pageNumber);
-      button.append(canvas, label);
+      button.append(label);
       fragment.append(button);
       thumbnailButtons.set(pageNumber, button);
-      canvases.push({ pageNumber, button, canvas });
     }
 
     pageThumbnailGrid.replaceChildren(fragment);
     updatePageJumpControls();
+    observePendingThumbnails();
+  }
+
+  function observePendingThumbnails() {
+    if (!pdfDocument || pageJumpPanel.hidden) return;
+    const generation = thumbnailGeneration;
     if ("IntersectionObserver" in window) {
       const observer = new IntersectionObserver((entries) => {
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
           const button = entry.target;
           const pageNumber = Number(button.dataset.pageNumber);
-          const canvas = button.querySelector("canvas");
           observer.unobserve(button);
-          queueThumbnail(pageNumber, canvas, generation);
+          queueThumbnail(pageNumber, button, generation);
         }
       }, {
         root: pageThumbnailGrid,
         rootMargin: "140px"
       });
       thumbnailObserver = observer;
-      for (const item of canvases) thumbnailObserver.observe(item.button);
+      for (const [pageNumber, button] of thumbnailButtons) {
+        if (!thumbnailCache.has(pageNumber)) thumbnailObserver.observe(button);
+      }
     } else {
-      for (const item of canvases) {
-        queueThumbnail(item.pageNumber, item.canvas, generation);
+      for (const [pageNumber, button] of thumbnailButtons) {
+        if (!thumbnailCache.has(pageNumber)) queueThumbnail(pageNumber, button, generation);
       }
     }
   }
 
+  pageThumbnailGrid.addEventListener("click", (event) => {
+    const button = event.target.closest(".page-thumbnail");
+    if (button && pageThumbnailGrid.contains(button)) {
+      jumpToPage(Number(button.dataset.pageNumber));
+    }
+  });
   function jumpToPage(pageNumber, closePanel = false) {
     if (!pdfDocument || !Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > pdfDocument.numPages) {
       return;
@@ -240,19 +352,17 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
   }
 
   function showToolbar() {
-    toolbar.classList.remove("is-hidden");
-    window.clearTimeout(hideTimer);
-    if (isAnnotating() || !pageJumpPanel.hidden) return;
-    hideTimer = window.setTimeout(() => toolbar.classList.add("is-hidden"), 3200);
+    if (readerView.classList.contains("is-focus-mode")) return;
+    toolbar.classList.remove("is-minimized");
+    onToolbarShow();
   }
 
   function toggleToolbar() {
-    if (isAnnotating()) return;
-    if (toolbar.classList.contains("is-hidden")) {
+    if (isAnnotating() || readerView.classList.contains("is-focus-mode")) return;
+    if (toolbar.classList.contains("is-minimized")) {
       showToolbar();
     } else {
-      window.clearTimeout(hideTimer);
-      toolbar.classList.add("is-hidden");
+      toolbar.classList.add("is-minimized");
     }
   }
 
@@ -288,25 +398,134 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
   function calculateViewport(page) {
     const baseViewport = page.getViewport({ scale: 1 });
     const bounds = pageContainer.getBoundingClientRect();
-    const verticalPadding = toolbar.classList.contains("is-hidden") ? 16 : 68;
+    const toolbarPadding = readerView.classList.contains("is-focus-mode")
+      ? 0
+      : toolbar.getBoundingClientRect().height + 8;
     const availableWidth = Math.max(1, bounds.width - 12);
-    const availableHeight = Math.max(1, bounds.height - verticalPadding);
+    const availableHeight = Math.max(1, bounds.height - toolbarPadding);
     const scale = Math.min(availableHeight / baseViewport.height, availableWidth / baseViewport.width);
     return page.getViewport({ scale });
   }
 
   function loadPage(pageNumber) {
     if (!pageLoads.has(pageNumber)) {
-      const pagePromise = pdfDocument.getPage(pageNumber);
+      const getPageStartedAt = perf.enabled ? performance.now() : 0;
+      let pagePromise = pdfDocument.getPage(pageNumber);
+      if (perf.enabled) {
+        pagePromise = pagePromise.then((page) => {
+          perf.time("PDF getPage()", getPageStartedAt, `page ${pageNumber}`);
+          return page;
+        });
+      }
       pageLoads.set(pageNumber, pagePromise);
+      while (pageLoads.size > PAGE_RENDER_CACHE_LIMIT) {
+        const oldest = pageLoads.keys().next().value;
+        pageLoads.delete(oldest);
+      }
       pagePromise.catch(() => pageLoads.delete(pageNumber));
     }
     return pageLoads.get(pageNumber);
   }
 
-  async function renderPage(pageNumber) {
+  function disposePageRender(render) {
+    if (!render || !render.canvas) return;
+    render.canvas.width = 0;
+    render.canvas.height = 0;
+  }
+
+  function rememberPageRender(pageNumber, canvas) {
+    const previous = pageRenders.get(pageNumber);
+    if (previous && previous.canvas !== canvas) disposePageRender(previous);
+    pageRenders.delete(pageNumber);
+    pageRenders.set(pageNumber, {
+      canvas,
+      width: canvas.width,
+      height: canvas.height
+    });
+    while (pageRenders.size > PAGE_RENDER_CACHE_LIMIT) {
+      const [oldPage, oldRender] = pageRenders.entries().next().value;
+      pageRenders.delete(oldPage);
+      disposePageRender(oldRender);
+    }
+  }
+
+  function clearPageRenderCache() {
+    for (const render of pageRenders.values()) disposePageRender(render);
+    pageRenders.clear();
+  }
+
+  function cancelPreload() {
+    preloadSequence += 1;
+    if (preloadHandle) {
+      if (preloadHandle.type === "idle" && typeof window.cancelIdleCallback === "function") {
+        window.cancelIdleCallback(preloadHandle.id);
+      } else {
+        window.clearTimeout(preloadHandle.id);
+      }
+      preloadHandle = null;
+    }
+    if (preloadRenderTask) {
+      try {
+        preloadRenderTask.cancel();
+      } catch (error) {
+        console.error("Could not cancel the background PDF render:", error);
+      }
+      preloadRenderTask = null;
+    }
+    if (preloadCanvas) {
+      disposePageRender({ canvas: preloadCanvas });
+      preloadCanvas = null;
+    }
+  }
+
+  function schedulePreload(pageNumber) {
+    cancelPreload();
+    if (!pdfDocument || pageNumber > pdfDocument.numPages) return;
+    const sequence = preloadSequence;
+    const start = () => {
+      preloadHandle = null;
+      preloadPage(pageNumber, sequence);
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      preloadHandle = {
+        type: "idle",
+        id: window.requestIdleCallback(start, { timeout: 500 })
+      };
+    } else {
+      preloadHandle = {
+        type: "timeout",
+        id: window.setTimeout(start, 50)
+      };
+    }
+  }
+
+  function reportMemory() {
+    if (!perf.enabled) return;
+    const pageCacheBytes = [...pageRenders.values()].reduce(
+      (total, render) => total + render.width * render.height * 4,
+      0
+    );
+    const thumbnailCacheBytes = [...thumbnailCache.values()].reduce(
+      (total, canvas) => total + canvas.width * canvas.height * 4,
+      0
+    );
+    perf.memory({
+      liveCanvases: document.querySelectorAll("canvas").length,
+      cachedPageBitmaps: pageRenders.size,
+      cachedPageBytes: pageCacheBytes,
+      thumbnailCacheEntries: thumbnailCache.size,
+      thumbnailCacheBytes,
+      loadedPageObjects: pageLoads.size,
+      storedBufferBytes: currentPdf && currentPdf.data instanceof ArrayBuffer
+        ? currentPdf.data.byteLength
+        : 0
+    });
+  }
+
+  async function renderPage(pageNumber, pageTurn = null) {
     if (!pdfDocument || pageNumber < 1 || pageNumber > pdfDocument.numPages) return;
     const sequence = ++renderSequence;
+    cancelPreload();
     if (activeRender) {
       activeRender.cancel();
       activeRender = null;
@@ -316,20 +535,29 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
     updatePageLabel();
     setMessage("");
     try {
+      const firstPageRender = openingDocument;
+      const firstRenderStartedAt = perf.begin();
       const page = await loadPage(pageNumber);
       if (sequence !== renderSequence) return;
       const viewport = calculateViewport(page);
-      const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
+      const pixelRatio = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
       const width = Math.max(1, Math.floor(viewport.width));
       const height = Math.max(1, Math.floor(viewport.height));
       resizeCanvas(pdfCanvas, width, height, pixelRatio);
       resizeCanvas(inkCanvas, width, height, pixelRatio);
 
       const cached = pageRenders.get(pageNumber);
+      let renderedFromCache = false;
       if (cached && cached.width === pdfCanvas.width && cached.height === pdfCanvas.height) {
+        const cacheDrawStartedAt = perf.begin();
         pdfContext.setTransform(1, 0, 0, 1, 0, 0);
         pdfContext.drawImage(cached.canvas, 0, 0);
+        perf.time("Rendered page cache draw", cacheDrawStartedAt, `page ${pageNumber}`);
+        pageRenders.delete(pageNumber);
+        pageRenders.set(pageNumber, cached);
+        renderedFromCache = true;
       } else {
+        const pageRenderStartedAt = perf.begin();
         const renderViewport = page.getViewport({ scale: viewport.scale * pixelRatio });
         const renderTask = page.render({
           canvasContext: pdfContext,
@@ -340,17 +568,31 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
         if (activeRender === renderTask) activeRender = null;
         if (sequence !== renderSequence) return;
         cacheRenderedPage(pageNumber);
+        perf.time("PDF canvas render", pageRenderStartedAt, `page ${pageNumber}`);
       }
 
       if (sequence !== renderSequence) return;
       inkContext.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
       await onPageChange(currentPdf.id, pageNumber);
       if (sequence !== renderSequence) return;
+      if (firstPageRender) {
+        openingDocument = false;
+        perf.time("PDF first page + annotations visible", firstRenderStartedAt);
+      }
+      if (pageTurn) {
+        perf.time(
+          renderedFromCache ? "Page turn visible (cached)" : "Page turn visible (uncached)",
+          pageTurn.startedAt,
+          `page ${pageNumber}`
+        );
+      }
       saveLastPage(currentPdf.id, currentPage, pdfDocument.numPages).catch((error) => {
         setMessage(`Could not save your place: ${error.message}`);
       });
-      preloadPage(currentPage + 1);
+      reportMemory();
+      schedulePreload(currentPage + 1);
     } catch (error) {
+      if (openingDocument) openingDocument = false;
       if (error.name !== "RenderingCancelledException") {
         setMessage(`Could not render page: ${error.message}`);
       }
@@ -362,57 +604,69 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
     cachedCanvas.width = pdfCanvas.width;
     cachedCanvas.height = pdfCanvas.height;
     cachedCanvas.getContext("2d").drawImage(pdfCanvas, 0, 0);
-    pageRenders.set(pageNumber, {
-      canvas: cachedCanvas,
-      width: cachedCanvas.width,
-      height: cachedCanvas.height
-    });
-    while (pageRenders.size > 3) {
-      const oldest = pageRenders.keys().next().value;
-      pageRenders.delete(oldest);
-    }
+    rememberPageRender(pageNumber, cachedCanvas);
   }
 
-  function preloadPage(pageNumber) {
-    if (!pdfDocument || pageNumber > pdfDocument.numPages) return;
-    // Keep the following page ready at the current display size for faster turns.
+  function preloadPage(pageNumber, sequence) {
+    if (!pdfDocument || sequence !== preloadSequence || pageNumber > pdfDocument.numPages) return;
+    const preloadStartedAt = perf.begin();
     loadPage(pageNumber).then(async (page) => {
-      if (!pdfDocument || pageNumber <= currentPage || pageRenders.has(pageNumber)) return;
+      if (
+        !pdfDocument ||
+        sequence !== preloadSequence ||
+        pageNumber !== currentPage + 1 ||
+        pageRenders.has(pageNumber)
+      ) return;
       const viewport = calculateViewport(page);
-      const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
+      const pixelRatio = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.round(Math.floor(viewport.width) * pixelRatio));
       canvas.height = Math.max(1, Math.round(Math.floor(viewport.height) * pixelRatio));
-      await page.render({
+      preloadCanvas = canvas;
+      const renderTask = page.render({
         canvasContext: canvas.getContext("2d"),
         viewport: page.getViewport({ scale: viewport.scale * pixelRatio })
-      }).promise;
-      if (pdfDocument && pageNumber > currentPage) {
-        pageRenders.set(pageNumber, {
-          canvas,
-          width: canvas.width,
-          height: canvas.height
-        });
+      });
+      preloadRenderTask = renderTask;
+      await renderTask.promise;
+      if (preloadRenderTask === renderTask) preloadRenderTask = null;
+      if (pdfDocument && sequence === preloadSequence && pageNumber === currentPage + 1) {
+        rememberPageRender(pageNumber, canvas);
+        if (preloadCanvas === canvas) preloadCanvas = null;
+        perf.time("Background page render", preloadStartedAt, `page ${pageNumber}`);
+        reportMemory();
+      } else {
+        disposePageRender({ canvas });
       }
     }).catch((error) => {
-      if (error.name !== "RenderingCancelledException") {
+      if (preloadRenderTask && sequence === preloadSequence) preloadRenderTask = null;
+      if (preloadCanvas && sequence === preloadSequence) {
+        disposePageRender({ canvas: preloadCanvas });
+        preloadCanvas = null;
+      }
+      if (sequence === preloadSequence && error.name !== "RenderingCancelledException") {
         setMessage(`Could not prepare the next page: ${error.message}`);
       }
     });
   }
 
   async function open(pdfId) {
+    const openStartedAt = perf.begin();
     await closeDocument();
     readerView.classList.add("is-active");
     readerView.setAttribute("aria-hidden", "false");
     setMessage("Opening PDF…");
     try {
       let record;
+      const readStartedAt = perf.begin();
       try {
         record = await getPdf(pdfId);
       } catch (error) {
         throw new Error(`Could not read PDF from storage: ${error.message}`);
       }
+      perf.time("PDF IndexedDB read", readStartedAt, record && record.data instanceof ArrayBuffer
+        ? `${record.data.byteLength} bytes`
+        : "record missing");
       if (!record) throw new Error("This PDF is no longer in the library.");
       if ("blob" in record) {
         throw new Error("This PDF uses the old storage format. Please delete it and re-import it from the Files app.");
@@ -423,25 +677,31 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
 
       currentPdf = record;
       const pdfjsLib = await loadPdfJs();
+      const copyStartedAt = perf.begin();
       const data = new Uint8Array(record.data.slice(0));
+      perf.time("PDF buffer copy", copyStartedAt, `${data.byteLength} bytes`);
+      const documentLoadStartedAt = perf.begin();
       loadingTask = pdfjsLib.getDocument({ data });
       pdfDocument = await loadingTask.promise;
+      perf.time("PDF getDocument()", documentLoadStartedAt, `${pdfDocument.numPages} pages`);
       currentPdf.pageCount = pdfDocument.numPages;
       titleElement.textContent = currentPdf.name;
+      titleElement.title = currentPdf.name;
       const requestedPage = Math.min(Math.max(1, currentPdf.lastPage || 1), pdfDocument.numPages);
       pageLoads = new Map();
       pageRenders = new Map();
-      showToolbar();
+      openingDocument = true;
       await renderPage(requestedPage);
+      perf.time("PDF open total", openStartedAt, `${pdfDocument.numPages} pages`);
     } catch (error) {
+      openingDocument = false;
       setMessage(`Could not open PDF: ${error.message}`);
     }
   }
 
   async function closeDocument() {
     renderSequence += 1;
-    window.clearTimeout(hideTimer);
-    hideTimer = null;
+    cancelPreload();
     pageJumpPanel.hidden = true;
     pageLabel.setAttribute("aria-expanded", "false");
     sliderDragging = false;
@@ -464,19 +724,21 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
     pdfDocument = null;
     loadingTask = null;
     pageLoads.clear();
-    pageRenders.clear();
+    clearPageRenderCache();
     currentPdf = null;
     currentPage = 1;
+    openingDocument = false;
     pdfCanvas.width = 1;
     pdfCanvas.height = 1;
     inkCanvas.width = 1;
     inkCanvas.height = 1;
     updatePageLabel();
+    reportMemory();
   }
 
   async function goToPage(pageNumber) {
     if (!pdfDocument || pageNumber < 1 || pageNumber > pdfDocument.numPages) return;
-    await renderPage(pageNumber);
+    await renderPage(pageNumber, perf.enabled ? { startedAt: performance.now() } : null);
   }
 
   function navigate(delta) {
@@ -504,7 +766,7 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
     const target = event.target;
     if (pageJumpPanel.contains(target) || pageLabel.contains(target)) return;
     closePagePanel();
-    if (!target.closest("#readerToolbar, #metronomePanel, #annotationToolbar")) {
+    if (!target.closest("#readerToolbar, #metronomePanel, #recorderPanel, #annotationToolbar, #focusRestoreButton")) {
       event.preventDefault();
       event.stopPropagation();
     }
@@ -595,7 +857,7 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
     if (!pdfDocument) return;
     window.clearTimeout(resizeTimer);
     resizeTimer = window.setTimeout(() => {
-      pageRenders.clear();
+      clearPageRenderCache();
       renderPage(currentPage);
     }, 100);
   });
@@ -610,13 +872,16 @@ export function createViewer({ onBack, isAnnotating = () => false, onPageChange 
   function setAnnotationMode(active) {
     readerView.classList.toggle("is-annotating", active);
     updatePageLabel();
-    if (active) {
-      window.clearTimeout(hideTimer);
-      toolbar.classList.remove("is-hidden");
-    } else {
-      showToolbar();
-    }
   }
 
-  return { open, setAnnotationMode };
+  function setPagePanelExpanded(expanded, notify = true) {
+    if (expanded) openPagePanel(notify);
+    else closePagePanel(notify);
+  }
+
+  function hasDocument() {
+    return Boolean(pdfDocument);
+  }
+
+  return { open, setAnnotationMode, setPagePanelExpanded, hasDocument };
 }

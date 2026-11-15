@@ -40,10 +40,24 @@ For every deployment, increment the application version in the `application-vers
 - Tap **Import backup**, choose the JSON file, then choose **Merge** or **Replace all**. Merge preserves existing items and adds records that are not already present. Replace all requires confirmation and replaces PDFs, annotations, and settings.
 - Back up regularly. Persistent storage reduces eviction risk but does not replace a backup.
 
+## 6. Quick recording
+
+- In the Reader, expand **Quick recording**, tap **Record**, and allow microphone access when prompted. Recordings are temporary, kept in memory only, limited to five minutes, and are not included in backups. They are discarded when the app closes.
+- Use **Re-record** to replace the current clip, **Play** to listen, or **Discard** to remove it. The app releases microphone access when recording stops.
+- **Metronome during recording** is on by default. Headphones keep the metronome clicks out of the recording. Playback pauses a running metronome and resumes it afterward.
+
+## 7. Reader controls
+
+- The page number opens page navigation. The toolbar, annotation tools, metronome, recorder, and page navigation can each be minimized.
+- Use **Focus** to hide the reader controls while keeping page navigation and a running metronome available. Tap **Show controls** to restore them.
+- Expanded trays minimize after eight seconds of inactivity by default. Turn this off in **Reader preferences** in the Library.
+- To inspect layout overflow during development, open the app with `?debug=1`; the on-screen UI count and console identify visible items to review.
+
 ## Troubleshooting
 
 - **A stale app is still shown:** close and reopen the Home Screen app. Confirm that the visible build version and `CACHE_NAME` were both bumped on deploy. If needed, visit the Pages URL online once so the new worker can install.
 - **Storage was cleared:** restore the most recent JSON backup. Without a backup, deleted browser storage cannot be recovered.
 - **Metronome is muted:** tap Start from within the app, check the volume control and iPad silent/audio settings, and allow Safari to play audio.
+- **Recording cannot access the microphone:** allow microphone access for Safari or the Home Screen app in iPad Settings. Close any other app currently using the microphone.
 - **A PDF will not open:** verify it is a valid PDF, re-import it from Files, and confirm both PDF.js files are present at the exact paths listed above.
 - **Offline launch fails:** open the Pages URL online once and wait for the service worker to install. Check that the PDF.js files and app shell files were uploaded successfully.

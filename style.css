@@ -459,11 +459,6 @@ h1 {
   transition: opacity 180ms ease;
 }
 
-.reader-toolbar.is-hidden {
-  opacity: 0;
-  pointer-events: none;
-}
-
 .reader-title {
   flex: 1;
   min-width: 0;
@@ -619,13 +614,22 @@ h1 {
   background: #263d5e;
 }
 
-.page-thumbnail canvas {
+.page-thumbnail canvas,
+.page-thumbnail-placeholder {
   display: block;
   width: 100%;
-  height: auto;
   max-height: 140px;
   background: #fff;
+}
+
+.page-thumbnail canvas {
+  height: auto;
   object-fit: contain;
+}
+
+.page-thumbnail-placeholder {
+  aspect-ratio: 3 / 4;
+  border-radius: 3px;
 }
 
 .page-thumbnail-label {
@@ -816,16 +820,137 @@ h1 {
   text-align: center;
 }
 
-.metronome-panel {
+.reader-audio-controls {
   position: absolute;
   z-index: 5;
   right: max(12px, env(safe-area-inset-right));
   bottom: max(12px, env(safe-area-inset-bottom));
-  width: min(320px, calc(100vw - 24px));
+  display: grid;
+  gap: 8px;
+  width: min(340px, calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 24px));
+  max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+
+.metronome-panel,
+.recorder-panel {
   border: 1px solid #414753;
   border-radius: 14px;
   background: #191c23f2;
   box-shadow: 0 4px 20px #0007;
+}
+
+.metronome-panel {
+  position: relative;
+  right: auto;
+  bottom: auto;
+  width: 100%;
+}
+
+.recorder-metronome-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  color: #dfe3ea;
+  font-size: 12px;
+  touch-action: manipulation;
+}
+
+.recorder-metronome-option input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.recorder-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: 6px;
+}
+
+.recorder-button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 10px;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.recorder-button-record {
+  background: #7d2932;
+}
+
+.recorder-button-record:active {
+  background: #963541;
+}
+
+.recorder-button-stop {
+  background: #8f3038;
+}
+
+.recorder-record-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: #ff454f;
+  vertical-align: 0;
+}
+
+.recorder-panel.is-recording .recorder-record-dot {
+  animation: recorder-pulse 1s ease-in-out infinite;
+}
+
+@keyframes recorder-pulse {
+  50% {
+    opacity: 0.35;
+    box-shadow: 0 0 10px #ff454f;
+  }
+}
+
+.recorder-timer,
+.recorder-playback-time {
+  min-height: 44px;
+  color: #f5f6f8;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  align-content: center;
+}
+
+.recorder-seek-bar {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  accent-color: var(--accent);
+  touch-action: pan-x;
+}
+
+.recorder-playback-time {
+  grid-column: 1 / -1;
+}
+
+.recorder-hint,
+.recorder-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.recorder-status {
+  min-height: 16px;
+}
+
+.recorder-status.is-error {
+  color: #ffcf8a;
 }
 
 .metronome-summary {
@@ -1048,8 +1173,660 @@ h1 {
     gap: 3px;
   }
 
-  .metronome-panel {
+  .reader-audio-controls {
     right: max(8px, env(safe-area-inset-right));
     bottom: max(8px, env(safe-area-inset-bottom));
+    width: calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 16px);
+  }
+}
+
+/* General overflow and long-content safeguards. */
+button,
+input,
+select,
+textarea {
+  max-width: 100%;
+}
+
+button,
+h1,
+h2,
+h3,
+p,
+label,
+output,
+span {
+  overflow-wrap: anywhere;
+}
+
+input,
+select,
+textarea {
+  min-width: 0;
+}
+
+input[type="range"] {
+  min-height: 44px;
+}
+
+#bpmValue,
+#volumeValue,
+#annotationWidthValue,
+#highlighterOpacityValue {
+  min-width: 46px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.metronome-status {
+  min-width: 62px;
+}
+
+.library-header {
+  flex-wrap: wrap;
+}
+
+.library-header > div,
+.app-status > *,
+.storage-settings-header > *,
+.pdf-card > *,
+.pdf-actions,
+.backup-mode-panel,
+.reader-toolbar > *,
+.page-jump-panel > *,
+.annotation-toolbar > *,
+.metronome-controls > *,
+.recorder-content > * {
+  min-width: 0;
+}
+
+.library-header h1 {
+  font-size: clamp(24px, 5vw, 36px);
+}
+
+.service-worker-status,
+.storage-status,
+.backup-reminder,
+.backup-message,
+.backup-mode-panel p,
+.install-instructions p,
+.message,
+.pdf-meta {
+  overflow-wrap: anywhere;
+  word-break: normal;
+  line-height: 1.4;
+}
+
+.storage-status,
+.backup-message,
+.message {
+  max-height: 18vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.reader-preferences {
+  max-width: 900px;
+  margin: 0 auto 14px;
+  padding: 14px;
+  border: 1px solid #343943;
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.reader-preferences h2 {
+  margin: 0 0 8px;
+  font-size: clamp(16px, 2.4vw, 19px);
+}
+
+.reader-preferences label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  color: #dfe3ea;
+}
+
+.reader-preferences input {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  accent-color: var(--accent);
+}
+
+.pdf-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.pdf-actions button {
+  min-width: 44px;
+  padding: 0 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-open {
+  max-width: 100%;
+}
+
+.pdf-meta {
+  max-width: 100%;
+}
+
+.offline-indicator {
+  right: max(10px, env(safe-area-inset-right));
+  width: max-content;
+  max-width: calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 20px);
+  overflow-wrap: anywhere;
+}
+
+.update-message {
+  width: min(440px, calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 24px));
+  max-height: 20vh;
+  overflow-y: auto;
+}
+
+.update-message > span {
+  min-width: 0;
+  flex: 1 1 150px;
+}
+
+.reader-toolbar {
+  flex-wrap: wrap;
+  min-width: 0;
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.reader-toolbar.is-minimized {
+  top: max(4px, env(safe-area-inset-top));
+  right: max(8px, env(safe-area-inset-right));
+  left: auto;
+  width: auto;
+  min-height: 48px;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 2px 5px;
+  border: 1px solid #414753;
+  border-radius: 14px;
+  background: #15171ddf;
+  box-shadow: 0 3px 14px #0006;
+}
+
+.reader-toolbar.is-minimized #backButton,
+.reader-toolbar.is-minimized #readerTitle,
+.reader-toolbar.is-minimized #annotationToggle,
+.reader-toolbar.is-minimized #previousButton,
+.reader-toolbar.is-minimized #nextButton,
+.reader-toolbar.is-minimized #toolbarMinimizeButton,
+.reader-toolbar.is-minimized #focusModeButton {
+  display: none;
+}
+
+.reader-toolbar.is-minimized .page-controls {
+  min-width: 0;
+  gap: 0;
+}
+
+.reader-toolbar.is-minimized .page-label {
+  min-width: 104px;
+}
+
+.reader-toolbar:not(.is-minimized) {
+  padding-bottom: 7px;
+}
+
+.reader-toolbar:not(.is-minimized) .reader-title {
+  font-size: clamp(13px, 1.7vw, 16px);
+}
+
+.reader-toolbar .button,
+.focus-mode-button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 clamp(7px, 1.2vw, 14px);
+}
+
+.page-controls {
+  flex-shrink: 0;
+}
+
+.page-label {
+  min-width: 104px;
+  font-size: clamp(12px, 1.6vw, 15px);
+  font-variant-numeric: tabular-nums;
+}
+
+.tray-toggle-button {
+  display: inline-grid;
+  place-items: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 8px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.page-jump-panel {
+  top: max(62px, calc(env(safe-area-inset-top) + 56px));
+  right: max(8px, env(safe-area-inset-right));
+  left: auto;
+  width: min(360px, calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 16px));
+  max-height: min(30dvh, 320px);
+  padding: 10px;
+  overflow: auto;
+  transform: none;
+}
+
+.page-jump-header h2 {
+  min-width: 0;
+  font-size: clamp(15px, 2vw, 18px);
+}
+
+.page-jump-form {
+  flex-wrap: wrap;
+}
+
+.page-jump-form input {
+  width: 84px;
+  max-width: 100%;
+}
+
+.page-jump-slider,
+.annotation-width-control input,
+.highlighter-opacity-control input,
+.volume-slider,
+#bpmSlider {
+  max-width: 100%;
+}
+
+.page-thumbnail-grid {
+  min-height: 60px;
+  max-height: 18dvh;
+  min-width: 0;
+}
+
+.page-jump-message,
+.annotation-message,
+.metronome-message,
+.recorder-hint,
+.recorder-status {
+  max-height: 12vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.reader-message {
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(12px, env(safe-area-inset-bottom));
+  left: max(12px, env(safe-area-inset-left));
+  max-height: 18vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  pointer-events: auto;
+}
+
+.annotation-toolbar {
+  top: auto;
+  bottom: max(10px, env(safe-area-inset-bottom));
+  left: max(10px, env(safe-area-inset-left));
+  right: max(10px, env(safe-area-inset-right));
+  justify-content: flex-start;
+  max-height: min(25dvh, 220px);
+  overflow: auto;
+  background: #191c23e8;
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.annotation-toolbar.is-minimized {
+  right: auto;
+  width: max-content;
+  max-width: calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 20px);
+  min-height: 48px;
+  padding: 2px;
+  overflow: hidden;
+  background: #191c23df;
+}
+
+.annotation-toolbar.is-minimized > :not(.annotation-tray-toggle) {
+  display: none;
+}
+
+.annotation-tray-toggle {
+  flex: 0 0 auto;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.annotation-toolbar:not(.is-minimized) .annotation-tray-toggle {
+  order: -1;
+}
+
+.annotation-tool-group,
+.annotation-color-group,
+.annotation-history-group {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.annotation-width-control {
+  width: min(180px, 100%);
+  min-width: min(140px, 100%);
+}
+
+.highlighter-opacity-control {
+  flex: 1 1 180px;
+  width: min(260px, 100%);
+  min-width: min(180px, 100%);
+}
+
+.finger-drawing-control {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.reader-audio-controls {
+  right: max(10px, env(safe-area-inset-right));
+  bottom: max(10px, env(safe-area-inset-bottom));
+  width: max-content;
+  max-width: min(340px, calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 20px));
+  max-height: min(25dvh, 240px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.metronome-panel,
+.recorder-panel {
+  min-width: 0;
+  width: max-content;
+  max-width: 100%;
+  overflow: hidden;
+  background: #191c23e8;
+}
+
+.reader-view.has-expanded-audio .reader-audio-controls {
+  width: min(340px, calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 20px));
+}
+
+.reader-view.has-expanded-audio .metronome-panel,
+.reader-view.has-expanded-audio .recorder-panel {
+  width: 100%;
+}
+
+.reader-view.has-expanded-annotation .reader-audio-controls {
+  top: max(62px, calc(env(safe-area-inset-top) + 58px));
+  bottom: auto;
+}
+
+.reader-view.has-expanded-audio #annotationToolbar.is-minimized {
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
+}
+
+.metronome-summary {
+  min-width: 0;
+  min-height: 48px;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 5px 8px;
+  padding: 2px 10px;
+  font-size: clamp(13px, 1.8vw, 15px);
+}
+
+.metronome-summary > span:first-child {
+  flex: 0 0 auto;
+}
+
+.metronome-summary-bpm {
+  min-width: 54px;
+  color: #dfe3ea;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.metronome-status {
+  min-width: 0;
+  font-size: 12px;
+}
+
+.metronome-panel:not([open]) .metronome-status {
+  display: none;
+}
+
+.metronome-summary::after {
+  margin-left: auto;
+}
+
+.beat-indicator {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  gap: 3px;
+  min-width: 0;
+  max-width: none;
+}
+
+.beat-indicator-dot {
+  width: 8px;
+  height: 8px;
+  flex-basis: 8px;
+}
+
+.metronome-controls {
+  max-height: min(20dvh, 190px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0 10px 10px;
+}
+
+.tempo-label,
+.setting-label,
+.signature-row,
+.tempo-adjust {
+  min-width: 0;
+}
+
+.tempo-label,
+.setting-label {
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: clamp(12px, 1.6vw, 14px);
+}
+
+.tempo-adjust {
+  gap: 5px;
+}
+
+.metronome-row {
+  flex-wrap: wrap;
+}
+
+.signature-row select {
+  width: 100%;
+  max-width: 100%;
+}
+
+.custom-beats-field {
+  flex: 0 0 auto;
+}
+
+.recorder-panel {
+  display: block;
+  padding: 0;
+}
+
+.recorder-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 2px 12px;
+  font-size: clamp(13px, 1.8vw, 15px);
+  font-weight: 650;
+  list-style: none;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.recorder-summary::-webkit-details-marker {
+  display: none;
+}
+
+.recorder-summary::after {
+  margin-left: auto;
+  color: var(--muted);
+  content: "⌄";
+}
+
+.recorder-panel[open] .recorder-summary::after {
+  content: "⌃";
+}
+
+.recorder-compact-status {
+  min-width: 52px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.recorder-compact-status.is-recording::before {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: #ff454f;
+  content: "";
+  animation: recorder-pulse 1s ease-in-out infinite;
+}
+
+.recorder-content {
+  display: grid;
+  gap: 7px;
+  max-height: min(20dvh, 190px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0 10px 10px;
+}
+
+.recorder-metronome-option {
+  flex-wrap: wrap;
+  min-width: 0;
+  font-size: clamp(11px, 1.5vw, 13px);
+}
+
+.recorder-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.recorder-button {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recorder-timer,
+.recorder-playback-time {
+  min-width: 54px;
+  font-variant-numeric: tabular-nums;
+}
+
+.recorder-seek-bar {
+  min-width: 0;
+}
+
+.recorder-hint,
+.recorder-status {
+  font-size: clamp(11px, 1.4vw, 12px);
+  line-height: 1.4;
+}
+
+.focus-restore-button {
+  position: absolute;
+  z-index: 9;
+  top: max(8px, env(safe-area-inset-top));
+  left: max(8px, env(safe-area-inset-left));
+  display: grid;
+  place-items: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid #ffffff44;
+  border-radius: 50px;
+  background: #15171d99;
+  color: #fff;
+  font-size: 12px;
+  opacity: 0.72;
+  backdrop-filter: blur(6px);
+}
+
+.reader-view.is-focus-mode #readerToolbar,
+.reader-view.is-focus-mode #annotationToolbar,
+.reader-view.is-focus-mode .reader-audio-controls,
+.reader-view.is-focus-mode #pageJumpPanel {
+  display: none !important;
+}
+
+.overflow-debug-badge {
+  position: fixed;
+  z-index: 1000;
+  top: max(6px, env(safe-area-inset-top));
+  left: max(6px, env(safe-area-inset-left));
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 2px solid #ff4d4d;
+  background: #17191fee;
+  color: #fff;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.overflow-debug-outline {
+  outline: 2px solid #ff4d4d !important;
+  outline-offset: -2px !important;
+}
+
+@media (max-width: 540px) {
+  .reader-toolbar:not(.is-minimized) {
+    justify-content: flex-start;
+    gap: 4px;
+  }
+
+  .reader-toolbar:not(.is-minimized) .page-controls {
+    margin-left: auto;
+  }
+
+  .reader-toolbar:not(.is-minimized) .focus-mode-button {
+    flex-basis: 100%;
+    min-height: 44px;
+  }
+
+  .page-jump-panel {
+    width: calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 16px);
+    max-height: min(30dvh, 260px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

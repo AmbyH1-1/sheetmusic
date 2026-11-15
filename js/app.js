@@ -1,7 +1,11 @@
 import { getSetting, initializeDatabase, setSetting } from "./db.js";
 import { createAnnotator } from "./annotate.js";
+import { installOverflowDebug } from "./debug-overflow.js";
 import { createLibrary } from "./library.js";
 import { createMetronome } from "./metronome.js";
+import { perf } from "./performance.js";
+import { createRecorder } from "./recorder.js";
+import { createTrayManager } from "./trays.js";
 import { createViewer } from "./viewer.js";
 
 const libraryView = document.querySelector("#libraryView");
@@ -113,7 +117,9 @@ function registerServiceWorker() {
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (wasControlled) updateMessage.hidden = false;
   }, { once: true });
+  const registerStartedAt = perf.begin();
   navigator.serviceWorker.register("./sw.js", { scope: "./" }).then((registration) => {
+    perf.time("Service worker registration", registerStartedAt);
     serviceWorkerStatus.textContent = "Offline app shell registered.";
 
     function watchForUpdate(worker) {
@@ -136,6 +142,7 @@ function registerServiceWorker() {
       updateMessage.hidden = false;
     }
   }).catch((error) => {
+    perf.time("Service worker registration failed", registerStartedAt, error.message);
     serviceWorkerStatus.textContent = `Offline support could not be enabled: ${error.message}`;
   });
 }
@@ -145,7 +152,15 @@ function preventGestureZoom() {
 }
 
 async function start() {
+  const startupStartedAt = perf.startedAt;
+  if (perf.enabled) {
+    const moduleResources = performance.getEntriesByType("resource")
+      .filter((entry) => entry.name.includes("/js/") && entry.name.endsWith(".js"));
+    const moduleTransferMs = moduleResources.reduce((total, entry) => total + entry.duration, 0);
+    perf.record("App module graph transfer", moduleTransferMs, "ms", `${moduleResources.length} modules`);
+  }
   preventGestureZoom();
+  installOverflowDebug();
   const version = document.querySelector('meta[name="application-version"]').content;
   document.querySelector("#buildVersion").textContent = `Build ${version}`;
   updateOfflineIndicator();
@@ -163,7 +178,9 @@ async function start() {
   });
 
   const metronome = createMetronome();
+  const recorder = createRecorder({ metronome });
   let viewer;
+  let trayManager;
   const annotator = createAnnotator({
     onModeChange: (active) => viewer.setAnnotationMode(active)
   });
@@ -173,10 +190,12 @@ async function start() {
       libraryView.setAttribute("aria-hidden", "true");
       history.pushState({ reader: true }, "");
       await viewer.open(pdf.id);
+      trayManager.applyForDocument();
     }
   });
   viewer = createViewer({
     onBack: async () => {
+      recorder.stopForNavigation();
       await annotator.exitMode();
       metronome.stop();
       libraryView.classList.add("is-active");
@@ -187,12 +206,33 @@ async function start() {
       await library.refresh();
     },
     isAnnotating: () => annotator.isActive(),
-    onPageChange: (pdfId, pageNumber) => annotator.setPage(pdfId, pageNumber)
+    onPageChange: (pdfId, pageNumber) => annotator.setPage(pdfId, pageNumber),
+    onToolbarShow: () => {
+      if (trayManager) trayManager.setExpanded("toolbar", true);
+    },
+    onPageJumpChange: (expanded) => {
+      if (trayManager) trayManager.setExpanded("pageJump", expanded);
+    }
+  });
+  trayManager = createTrayManager({
+    viewer,
+    onError: (text) => {
+      if (document.querySelector("#readerView").classList.contains("is-active")) {
+        document.querySelector("#readerMessage").textContent = text;
+      } else {
+        showLibraryMessage(text);
+      }
+    }
   });
 
   try {
+    const databaseStartedAt = perf.begin();
     await initializeDatabase();
+    perf.time("IndexedDB initialize", databaseStartedAt);
+    await trayManager.initialize();
     await library.refresh();
+    perf.time("Startup to interactive", startupStartedAt);
+    perf.time("Navigation start to interactive", 0);
   } catch (error) {
     showLibraryMessage(`Could not start the music library: ${error.message}`);
     return;

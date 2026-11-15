@@ -1,4 +1,5 @@
 import { getSetting, loadAnnotations, saveAnnotations, setSetting } from "./db.js";
+import { perf } from "./performance.js";
 
 const SAVE_DELAY_MS = 350;
 
@@ -35,9 +36,15 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
   let currentStroke = null;
   let currentErasures = null;
   let activePointerId = null;
+  let activeCanvasRect = null;
+  let activeCanvasSize = null;
   let saveTimer = null;
   let pendingSave = null;
   let saveQueue = Promise.resolve();
+  let autosaveCount = 0;
+  let lastAutosaveAt = 0;
+  let inkFrameRequest = null;
+  let lastInkFrameTime = 0;
 
   function setMessage(text) {
     message.textContent = text;
@@ -79,10 +86,22 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
   }
 
   function persistSnapshot(snapshot) {
+    const saveStartedAt = perf.begin();
     saveQueue = saveQueue.catch(() => {}).then(() => (
       saveAnnotations(snapshot.pdfId, snapshot.pageNumber, snapshot.strokes)
     ));
-    saveQueue.catch((error) => {
+    saveQueue = saveQueue.then(() => {
+      const completedAt = perf.enabled ? performance.now() : 0;
+      autosaveCount += 1;
+      perf.time("Annotation save time", saveStartedAt, `${snapshot.strokes.length} strokes`);
+      perf.record(
+        "Annotation autosave count",
+        autosaveCount,
+        "saves",
+        lastAutosaveAt ? `${(completedAt - lastAutosaveAt).toFixed(0)} ms since previous save` : "first save"
+      );
+      if (perf.enabled) lastAutosaveAt = completedAt;
+    }).catch((error) => {
       setMessage(`Could not save annotations: ${error.message}`);
     });
     return saveQueue;
@@ -135,8 +154,8 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     context.lineJoin = "round";
   }
 
-  function drawSegment(stroke, from, to) {
-    const size = getCanvasSize();
+  function drawSegment(stroke, from, to, measuredSize = getCanvasSize()) {
+    const size = measuredSize;
     if (!size) return;
     prepareStroke(stroke, size);
     const pressure = Math.max(0.1, (from.pressure + to.pressure) / 2);
@@ -147,8 +166,8 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     context.stroke();
   }
 
-  function drawDot(stroke, point) {
-    const size = getCanvasSize();
+  function drawDot(stroke, point, measuredSize = getCanvasSize()) {
+    const size = measuredSize;
     if (!size) return;
     prepareStroke(stroke, size);
     const radius = Math.max(0.5, stroke.width * size.width * point.pressure / 2);
@@ -157,10 +176,10 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     context.fill();
   }
 
-  function drawStroke(stroke) {
+  function drawStroke(stroke, measuredSize) {
     if (!stroke.points.length) return;
     if (stroke.tool === "highlighter") {
-      const size = getCanvasSize();
+      const size = measuredSize;
       if (!size) return;
       prepareStroke(stroke, size);
       context.lineWidth = Math.max(0.5, stroke.width * size.width);
@@ -177,19 +196,20 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
       return;
     }
     if (stroke.points.length === 1) {
-      drawDot(stroke, stroke.points[0]);
+      drawDot(stroke, stroke.points[0], measuredSize);
       return;
     }
     for (let index = 1; index < stroke.points.length; index += 1) {
-      drawSegment(stroke, stroke.points[index - 1], stroke.points[index]);
+      drawSegment(stroke, stroke.points[index - 1], stroke.points[index], measuredSize);
     }
   }
 
   function redraw() {
+    const size = getCanvasSize();
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, canvas.width, canvas.height);
     for (const stroke of strokes) {
-      if (!currentErasures || !currentErasures.has(stroke)) drawStroke(stroke);
+      if ((!currentErasures || !currentErasures.has(stroke)) && size) drawStroke(stroke, size);
     }
   }
 
@@ -229,7 +249,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
   }
 
   function eraseAt(point) {
-    const size = getCanvasSize();
+    const size = activeCanvasSize || getCanvasSize();
     if (!size || !currentErasures) return;
     const radius = currentStroke.width * size.width / 2;
     let changed = false;
@@ -242,8 +262,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     if (changed) redraw();
   }
 
-  function makePoint(event) {
-    const rect = canvas.getBoundingClientRect();
+  function makePoint(event, rect = activeCanvasRect || canvas.getBoundingClientRect()) {
     if (!rect.width || !rect.height) return null;
     const pressure = Number.isFinite(event.pressure) && event.pressure > 0 ? event.pressure : 0.5;
     return {
@@ -265,14 +284,15 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     } else if (currentStroke.tool === "highlighter") {
       return true;
     } else if (previous) {
-      drawSegment(currentStroke, previous, point);
+      drawSegment(currentStroke, previous, point, activeCanvasSize);
     } else {
-      drawDot(currentStroke, point);
+      drawDot(currentStroke, point, activeCanvasSize);
     }
     return true;
   }
 
   function appendPointerSamples(event) {
+    const drawStartedAt = perf.begin();
     const samples = typeof event.getCoalescedEvents === "function"
       ? Array.from(event.getCoalescedEvents())
       : [];
@@ -285,6 +305,20 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
       changed = appendPoint(sample) || changed;
     }
     if (changed && currentStroke && currentStroke.tool === "highlighter") redraw();
+    if (changed && perf.enabled) {
+      perf.sample("Ink pointer-to-draw", performance.now() - drawStartedAt);
+    }
+  }
+
+  function measureInkFrame(timestamp) {
+    if (activePointerId === null) {
+      inkFrameRequest = null;
+      lastInkFrameTime = 0;
+      return;
+    }
+    if (lastInkFrameTime) perf.sample("Ink frame interval", timestamp - lastInkFrameTime);
+    lastInkFrameTime = timestamp;
+    inkFrameRequest = window.requestAnimationFrame(measureInkFrame);
   }
 
   function finishStroke() {
@@ -312,6 +346,15 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     currentStroke = null;
     currentErasures = null;
     activePointerId = null;
+    activeCanvasRect = null;
+    activeCanvasSize = null;
+    if (inkFrameRequest !== null) {
+      window.cancelAnimationFrame(inkFrameRequest);
+      inkFrameRequest = null;
+    }
+    lastInkFrameTime = 0;
+    perf.summarize("Ink pointer-to-draw");
+    perf.summarize("Ink frame interval");
     updateHistoryButtons();
   }
 
@@ -326,6 +369,11 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     const size = getCanvasSize();
     if (!size) return;
     activePointerId = event.pointerId;
+    activeCanvasRect = size.rect;
+    activeCanvasSize = size;
+    if (perf.enabled && inkFrameRequest === null) {
+      inkFrameRequest = window.requestAnimationFrame(measureInkFrame);
+    }
     canvas.setPointerCapture(event.pointerId);
     const widthFactor = currentTool === "highlighter" ? 2.5 : currentTool === "eraser" ? 3 : 1;
     currentStroke = {

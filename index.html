@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#111318">
-  <meta name="application-version" content="2.1.2">
+  <meta name="application-version" content="2.1.7">
   <title>Sheet Music</title>
   <link rel="manifest" href="./manifest.json">
   <link rel="apple-touch-icon" href="./icons/icon-180.png">
@@ -66,6 +66,14 @@
         </div>
       </section>
 
+      <section class="reader-preferences" aria-labelledby="readerPreferencesTitle">
+        <h2 id="readerPreferencesTitle">Reader preferences</h2>
+        <label for="autoMinimizeTrays">
+          <input id="autoMinimizeTrays" type="checkbox" checked>
+          Minimize expanded trays after 8 seconds
+        </label>
+      </section>
+
       <p id="libraryMessage" class="message" role="status" aria-live="polite"></p>
       <div id="emptyLibrary" class="empty-state">
         <p>Your library is empty.</p>
@@ -83,7 +91,7 @@
       <button id="nextZone" class="tap-zone tap-zone-right" type="button" aria-label="Next page"></button>
       <button id="centerZone" class="tap-zone tap-zone-center" type="button" aria-label="Show or hide toolbar"></button>
 
-      <header id="readerToolbar" class="reader-toolbar">
+      <header id="readerToolbar" class="reader-toolbar is-minimized">
         <button id="backButton" class="button" type="button">Library</button>
         <div id="readerTitle" class="reader-title"></div>
         <button id="annotationToggle" class="button annotation-toggle" type="button" aria-pressed="false">Annotate</button>
@@ -92,11 +100,14 @@
           <button id="pageLabel" class="button page-label" type="button" aria-live="polite" aria-haspopup="dialog" aria-expanded="false" aria-controls="pageJumpPanel">— / —</button>
           <button id="nextButton" class="button icon-button" type="button" aria-label="Next page">›</button>
         </div>
+        <button id="toolbarMinimizeButton" class="tray-toggle-button" type="button" aria-label="Minimize reader toolbar">⌃</button>
+        <button id="toolbarExpandButton" class="tray-toggle-button" type="button" aria-label="Expand reader toolbar">⌄</button>
+        <button id="focusModeButton" class="focus-mode-button" type="button">Focus</button>
       </header>
       <section id="pageJumpPanel" class="page-jump-panel" role="dialog" aria-labelledby="pageJumpTitle" hidden>
         <header class="page-jump-header">
           <h2 id="pageJumpTitle">Go to page</h2>
-          <button id="pageJumpClose" class="page-jump-close" type="button" aria-label="Close page navigation">Close</button>
+          <button id="pageJumpClose" class="page-jump-close tray-toggle-button" type="button" aria-label="Minimize page navigation">⌃</button>
         </header>
         <form id="pageJumpForm" class="page-jump-form" novalidate>
           <label for="pageJumpInput">Page</label>
@@ -110,7 +121,8 @@
         <div id="pageThumbnailGrid" class="page-thumbnail-grid" aria-label="Page thumbnails"></div>
         <p id="pageJumpMessage" class="page-jump-message" role="status" aria-live="polite"></p>
       </section>
-      <div id="annotationToolbar" class="annotation-toolbar" role="toolbar" aria-label="Annotation tools" hidden>
+      <div id="annotationToolbar" class="annotation-toolbar is-minimized" role="toolbar" aria-label="Annotation tools" hidden>
+        <button id="annotationTrayToggle" class="tray-toggle-button annotation-tray-toggle" type="button" aria-label="Expand annotation tools">Tools ⌄</button>
         <div class="annotation-tool-group" role="group" aria-label="Drawing tool">
           <button class="annotation-tool-button is-selected" type="button" data-annotation-tool="pen" aria-pressed="true">Pen</button>
           <button class="annotation-tool-button" type="button" data-annotation-tool="highlighter" aria-pressed="false">Highlight</button>
@@ -142,51 +154,86 @@
         </label>
         <p id="annotationMessage" class="annotation-message" role="status" aria-live="polite"></p>
       </div>
-      <details id="metronomePanel" class="metronome-panel">
-        <summary class="metronome-summary">
-          <span>Metronome</span>
-          <span id="metronomeStatus" class="metronome-status">Stopped</span>
-        </summary>
-        <div class="metronome-controls">
-          <div class="tempo-row">
-            <label class="tempo-label" for="bpmSlider">Tempo <output id="bpmValue">96 BPM</output></label>
-            <div class="tempo-adjust">
-              <button id="bpmDown" class="tempo-adjust-button" type="button" aria-label="Decrease tempo">−</button>
-              <input id="bpmSlider" type="range" min="30" max="300" step="1" value="96" aria-label="Tempo, beats per minute">
-              <button id="bpmUp" class="tempo-adjust-button" type="button" aria-label="Increase tempo">+</button>
-            </div>
-          </div>
-
-          <div class="metronome-row">
-            <button id="metronomeToggle" class="button button-primary metronome-toggle" type="button">Start</button>
-            <button id="tapTempo" class="button tap-tempo-button" type="button">Tap tempo</button>
+      <div class="reader-audio-controls">
+        <details id="metronomePanel" class="metronome-panel">
+          <summary class="metronome-summary">
+            <span>Metronome</span>
+            <span id="metronomeStatus" class="metronome-status">Stopped</span>
+            <output id="metronomeSummaryBpm" class="metronome-summary-bpm">96 BPM</output>
             <span id="beatIndicator" class="beat-indicator" aria-label="Beat indicator"></span>
-          </div>
+          </summary>
+          <div class="metronome-controls">
+            <div class="tempo-row">
+              <label class="tempo-label" for="bpmSlider">Tempo <output id="bpmValue">96 BPM</output></label>
+              <div class="tempo-adjust">
+                <button id="bpmDown" class="tempo-adjust-button" type="button" aria-label="Decrease tempo">−</button>
+                <input id="bpmSlider" type="range" min="30" max="300" step="1" value="96" aria-label="Tempo, beats per minute">
+                <button id="bpmUp" class="tempo-adjust-button" type="button" aria-label="Increase tempo">+</button>
+              </div>
+            </div>
 
-          <label class="setting-label" for="timeSignature">Time signature</label>
-          <div class="signature-row">
-            <select id="timeSignature">
-              <option value="2/4">2/4</option>
-              <option value="3/4">3/4</option>
-              <option value="4/4" selected>4/4</option>
-              <option value="5/4">5/4</option>
-              <option value="6/4">6/4</option>
-              <option value="6/8">6/8</option>
-              <option value="custom">Custom</option>
-            </select>
-            <label id="customBeatsField" class="custom-beats-field" for="customBeats" hidden>
-              Beats
-              <input id="customBeats" type="number" min="1" max="16" step="1" value="4" inputmode="numeric">
+            <div class="metronome-row">
+              <button id="metronomeToggle" class="button button-primary metronome-toggle" type="button">Start</button>
+              <button id="tapTempo" class="button tap-tempo-button" type="button">Tap tempo</button>
+            </div>
+
+            <label class="setting-label" for="timeSignature">Time signature</label>
+            <div class="signature-row">
+              <select id="timeSignature">
+                <option value="2/4">2/4</option>
+                <option value="3/4">3/4</option>
+                <option value="4/4" selected>4/4</option>
+                <option value="5/4">5/4</option>
+                <option value="6/4">6/4</option>
+                <option value="6/8">6/8</option>
+                <option value="custom">Custom</option>
+              </select>
+              <label id="customBeatsField" class="custom-beats-field" for="customBeats" hidden>
+                Beats
+                <input id="customBeats" type="number" min="1" max="16" step="1" value="4" inputmode="numeric">
+              </label>
+            </div>
+
+            <label class="setting-label volume-label" for="metronomeVolume">
+              Volume <output id="volumeValue">70%</output>
             </label>
+            <input id="metronomeVolume" class="volume-slider" type="range" min="0" max="1" step="0.01" value="0.7" aria-label="Metronome volume">
+            <p id="metronomeMessage" class="metronome-message" role="status" aria-live="polite"></p>
           </div>
-
-          <label class="setting-label volume-label" for="metronomeVolume">
-            Volume <output id="volumeValue">70%</output>
-          </label>
-          <input id="metronomeVolume" class="volume-slider" type="range" min="0" max="1" step="0.01" value="0.7" aria-label="Metronome volume">
-          <p id="metronomeMessage" class="metronome-message" role="status" aria-live="polite"></p>
-        </div>
-      </details>
+        </details>
+        <details id="recorderPanel" class="recorder-panel">
+          <summary class="recorder-summary">
+            <span>Quick recording</span>
+            <span id="recorderCompactStatus" class="recorder-compact-status">Ready</span>
+          </summary>
+          <div class="recorder-content">
+            <label class="recorder-metronome-option" for="metronomeDuringRecording">
+              <input id="metronomeDuringRecording" type="checkbox" checked>
+              Metronome during recording
+            </label>
+          <div class="recorder-actions">
+            <button id="recordButton" class="recorder-button recorder-button-record" type="button">
+              <span class="recorder-record-dot" aria-hidden="true"></span>
+              Record
+            </button>
+            <button id="recordStopButton" class="recorder-button recorder-button-stop" type="button" hidden>
+              <span class="recorder-record-dot" aria-hidden="true"></span>
+              Stop
+            </button>
+            <output id="recordTimer" class="recorder-timer" hidden>0:00</output>
+            <button id="recordPlaybackButton" class="recorder-button" type="button" hidden>Play</button>
+            <input id="recordSeekBar" class="recorder-seek-bar" type="range" min="0" max="1" step="0.01" value="0" aria-label="Seek through recording" hidden>
+            <output id="recordPlaybackTime" class="recorder-playback-time" hidden>0:00 / 0:00</output>
+            <button id="rerecordButton" class="recorder-button" type="button" hidden>Re-record</button>
+            <button id="discardRecordingButton" class="recorder-button" type="button" hidden>Discard</button>
+          </div>
+          <p class="recorder-hint">Headphones keep the clicks out of your recording. Recordings are temporary and stay in memory only.</p>
+          <p id="recorderStatus" class="recorder-status" role="status" aria-live="polite"></p>
+          <audio id="recordedAudio" playsinline preload="metadata" hidden></audio>
+          </div>
+        </details>
+      </div>
+      <button id="focusRestoreButton" class="focus-restore-button" type="button" hidden>Show controls</button>
       <p id="readerMessage" class="reader-message" role="status" aria-live="polite"></p>
     </section>
   </main>
