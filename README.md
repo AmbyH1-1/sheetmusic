@@ -49,6 +49,7 @@ For every deployment, increment the application version in the `application-vers
 ## 7. Reader controls
 
 - The page number opens page navigation. The toolbar, annotation tools, metronome, recorder, and page navigation can each be minimized.
+- Choose **Single**, **Two pages**, or **Auto** in the reader toolbar. Auto uses a spread in landscape and a single page in portrait. In Two pages mode, **Cover alone** shows page 1 by itself on the right; page navigation and annotations continue to use the original PDF page numbers.
 - Use **Focus** to hide the reader controls while keeping page navigation and a running metronome available. Tap **Show controls** to restore them.
 - Expanded trays minimize after eight seconds of inactivity by default. Turn this off in **Reader preferences** in the Library.
 - To inspect layout overflow during development, open the app with `?debug=1`; the on-screen UI count and console identify visible items to review.

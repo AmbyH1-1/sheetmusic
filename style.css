@@ -364,22 +364,39 @@ h1 {
     max(4px, env(safe-area-inset-right))
     max(4px, env(safe-area-inset-bottom))
     max(4px, env(safe-area-inset-left));
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.page-slot {
+  position: relative;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.page-slot[hidden] {
+  display: none;
+}
+
+.page-slot.is-blank canvas {
+  visibility: hidden;
   pointer-events: none;
 }
 
 .page-container canvas {
   position: absolute;
-  top: 50%;
-  left: 50%;
+  top: 0;
+  left: 0;
   display: block;
   max-width: 100%;
   max-height: 100%;
-  transform: translate(-50%, -50%);
+  transform: none;
 }
 
-#pdfCanvas {
+#pdfCanvas,
+#pdfCanvas1 {
   background: #fff;
   box-shadow: 0 2px 24px #0008;
 }
@@ -389,17 +406,22 @@ h1 {
   pointer-events: none;
 }
 
+.ink-canvas {
+  background: transparent;
+  pointer-events: none;
+}
+
+.reader-view.is-annotating .ink-canvas {
+  pointer-events: auto;
+  touch-action: none;
+}
+
 .reader-view.is-annotating .page-container {
   pointer-events: auto;
 }
 
 .reader-view.is-annotating .tap-zone {
   pointer-events: none;
-}
-
-.reader-view.is-annotating #inkCanvas {
-  pointer-events: auto;
-  touch-action: none;
 }
 
 .tap-zone {
@@ -474,6 +496,34 @@ h1 {
   align-items: center;
   gap: 8px;
   min-width: max-content;
+}
+
+.display-mode-control,
+.cover-page-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  color: #dfe3ea;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.display-mode-control select {
+  min-height: 40px;
+  max-width: 120px;
+  padding: 0 7px;
+  border: 1px solid #414753;
+  border-radius: 8px;
+  background: #30343d;
+  color: inherit;
+  font: inherit;
+}
+
+.cover-page-control input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
 }
 
 .icon-button {
@@ -1358,6 +1408,8 @@ input[type="range"] {
 .reader-toolbar.is-minimized #backButton,
 .reader-toolbar.is-minimized #readerTitle,
 .reader-toolbar.is-minimized #annotationToggle,
+.reader-toolbar.is-minimized .display-mode-control,
+.reader-toolbar.is-minimized .cover-page-control,
 .reader-toolbar.is-minimized #previousButton,
 .reader-toolbar.is-minimized #nextButton,
 .reader-toolbar.is-minimized #toolbarMinimizeButton,

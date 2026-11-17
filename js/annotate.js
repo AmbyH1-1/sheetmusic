@@ -5,8 +5,8 @@ const SAVE_DELAY_MS = 350;
 
 export function createAnnotator({ onModeChange = () => {} } = {}) {
   const readerView = document.querySelector("#readerView");
-  const canvas = document.querySelector("#inkCanvas");
-  const context = canvas.getContext("2d");
+  let canvas = document.querySelector("#inkCanvas");
+  let context = canvas.getContext("2d");
   const toggleButton = document.querySelector("#annotationToggle");
   const toolbar = document.querySelector("#annotationToolbar");
   const message = document.querySelector("#annotationMessage");
@@ -24,6 +24,9 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
   let active = false;
   let activePdfId = null;
   let activePageNumber = null;
+  let pageStates = new Map();
+  let visiblePages = new Map();
+  let lastDrawnPage = null;
   let loadSequence = 0;
   let currentTool = "pen";
   let currentColor = "#17191f";
@@ -36,10 +39,11 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
   let currentStroke = null;
   let currentErasures = null;
   let activePointerId = null;
+  let flushInProgress = false;
   let activeCanvasRect = null;
   let activeCanvasSize = null;
   let saveTimer = null;
-  let pendingSave = null;
+  let pendingSaves = new Map();
   let saveQueue = Promise.resolve();
   let autosaveCount = 0;
   let lastAutosaveAt = 0;
@@ -51,8 +55,19 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
   }
 
   function updateHistoryButtons() {
-    undoButton.disabled = undoStack.length === 0;
-    redoButton.disabled = redoStack.length === 0;
+    const historyState = lastDrawnPage && pageStates.has(lastDrawnPage)
+      ? pageStates.get(lastDrawnPage)
+      : { undoStack, redoStack };
+    undoButton.disabled = historyState.undoStack.length === 0;
+    redoButton.disabled = historyState.redoStack.length === 0;
+  }
+
+  function saveCurrentState() {
+    if (!activePageNumber || !pageStates.has(activePageNumber)) return;
+    const state = pageStates.get(activePageNumber);
+    state.strokes = strokes;
+    state.undoStack = undoStack;
+    state.redoStack = redoStack;
   }
 
   function getStrokeOpacity(stroke) {
@@ -78,6 +93,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
 
   function createSaveSnapshot() {
     if (!activePdfId || !activePageNumber) return null;
+    saveCurrentState();
     return {
       pdfId: activePdfId,
       pageNumber: activePageNumber,
@@ -110,29 +126,55 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
   function scheduleSave() {
     const snapshot = createSaveSnapshot();
     if (!snapshot) return;
-    pendingSave = snapshot;
+    pendingSaves.set(snapshot.pageNumber, snapshot);
     window.clearTimeout(saveTimer);
     saveTimer = window.setTimeout(() => {
-      const save = pendingSave;
-      pendingSave = null;
       saveTimer = null;
-      if (save) persistSnapshot(save);
+      const saves = [...pendingSaves.values()];
+      pendingSaves.clear();
+      for (const save of saves) persistSnapshot(save);
     }, SAVE_DELAY_MS);
   }
 
   async function flushSave() {
-    if (saveTimer !== null) {
-      window.clearTimeout(saveTimer);
-      saveTimer = null;
-      const save = pendingSave;
-      pendingSave = null;
-      if (save) await persistSnapshot(save);
+    flushInProgress = true;
+    try {
+      finishStroke();
+      while (pendingSaves.size) {
+        if (saveTimer !== null) {
+          window.clearTimeout(saveTimer);
+          saveTimer = null;
+        }
+        const saves = [...pendingSaves.values()];
+        pendingSaves.clear();
+        for (const save of saves) await persistSnapshot(save);
+      }
+      await saveQueue;
+    } finally {
+      flushInProgress = false;
     }
-    await saveQueue;
   }
 
-  function getCanvasSize() {
-    const rect = canvas.getBoundingClientRect();
+  function bindPageState(pageNumber, targetCanvas) {
+    if (activePageNumber && pageStates.has(activePageNumber)) {
+      const previous = pageStates.get(activePageNumber);
+      previous.strokes = strokes;
+      previous.undoStack = undoStack;
+      previous.redoStack = redoStack;
+    }
+    const state = pageStates.get(pageNumber);
+    if (!state) return false;
+    activePageNumber = pageNumber;
+    canvas = targetCanvas;
+    context = canvas.getContext("2d");
+    strokes = state.strokes;
+    undoStack = state.undoStack;
+    redoStack = state.redoStack;
+    return true;
+  }
+
+  function getCanvasSize(targetCanvas = canvas) {
+    const rect = targetCanvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
     return { rect, width: rect.width, height: rect.height };
   }
@@ -204,12 +246,33 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     }
   }
 
-  function redraw() {
-    const size = getCanvasSize();
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.clearRect(0, 0, canvas.width, canvas.height);
+  function redraw(targetCanvas = canvas, state = pageStates.get(Number(targetCanvas.dataset.pageNumber))) {
+    if (!state) return;
+    saveCurrentState();
+    const targetContext = targetCanvas.getContext("2d");
+    const size = getCanvasSize(targetCanvas);
+    targetContext.setTransform(1, 0, 0, 1, 0, 0);
+    targetContext.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
+    const previousCanvas = canvas;
+    const previousContext = context;
+    const previousStrokes = strokes;
+    const previousErasures = currentErasures;
+    canvas = targetCanvas;
+    context = targetContext;
+    strokes = state.strokes;
+    currentErasures = targetCanvas === previousCanvas ? previousErasures : null;
     for (const stroke of strokes) {
       if ((!currentErasures || !currentErasures.has(stroke)) && size) drawStroke(stroke, size);
+    }
+    canvas = previousCanvas;
+    context = previousContext;
+    strokes = previousStrokes;
+    currentErasures = previousErasures;
+  }
+
+  function redrawVisible() {
+    for (const [pageNumber, targetCanvas] of visiblePages) {
+      redraw(targetCanvas, pageStates.get(pageNumber));
     }
   }
 
@@ -364,10 +427,15 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
   }
 
   function handlePointerDown(event) {
-    if (!active || activePointerId !== null || !isDrawingPointer(event)) return;
+    if (!active || flushInProgress || activePointerId !== null || !isDrawingPointer(event)) return;
+    const targetCanvas = event.target.closest(".ink-canvas");
+    if (!targetCanvas || !readerView.contains(targetCanvas)) return;
+    const pageNumber = Number(targetCanvas.dataset.pageNumber);
+    if (!Number.isInteger(pageNumber) || !bindPageState(pageNumber, targetCanvas)) return;
     event.preventDefault();
     const size = getCanvasSize();
     if (!size) return;
+    lastDrawnPage = pageNumber;
     activePointerId = event.pointerId;
     activeCanvasRect = size.rect;
     activeCanvasSize = size;
@@ -422,6 +490,9 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
 
   function undo() {
     finishStroke();
+    if (lastDrawnPage && pageStates.has(lastDrawnPage)) {
+      bindPageState(lastDrawnPage, visiblePages.get(lastDrawnPage) || canvas);
+    }
     const action = undoStack.pop();
     if (!action) return;
     if (action.type === "add") {
@@ -434,14 +505,19 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     } else if (action.type === "clear") {
       strokes = action.strokes.slice();
     }
+    saveCurrentState();
     redoStack.push(action);
-    redraw();
+    const targetCanvas = visiblePages.get(activePageNumber);
+    if (targetCanvas) redraw(targetCanvas, pageStates.get(activePageNumber));
     updateHistoryButtons();
     scheduleSave();
   }
 
   function redo() {
     finishStroke();
+    if (lastDrawnPage && pageStates.has(lastDrawnPage)) {
+      bindPageState(lastDrawnPage, visiblePages.get(lastDrawnPage) || canvas);
+    }
     const action = redoStack.pop();
     if (!action) return;
     if (action.type === "add") {
@@ -452,20 +528,32 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     } else if (action.type === "clear") {
       strokes = [];
     }
+    saveCurrentState();
     undoStack.push(action);
-    redraw();
+    const targetCanvas = visiblePages.get(activePageNumber);
+    if (targetCanvas) redraw(targetCanvas, pageStates.get(activePageNumber));
     updateHistoryButtons();
     scheduleSave();
   }
 
   function clearPage() {
     finishStroke();
+    if (lastDrawnPage && pageStates.has(lastDrawnPage)) {
+      bindPageState(lastDrawnPage, visiblePages.get(lastDrawnPage) || canvas);
+    } else if (visiblePages.size > 1) {
+      const choice = window.prompt(`Which page should be cleared? Enter ${[...visiblePages.keys()].join(" or ")}.`);
+      const pageNumber = Number(choice);
+      if (!visiblePages.has(pageNumber)) return;
+      bindPageState(pageNumber, visiblePages.get(pageNumber));
+    }
     if (!strokes.length) return;
     if (!window.confirm("Clear all annotations on this page?")) return;
     undoStack.push({ type: "clear", strokes: strokes.slice() });
     redoStack = [];
     strokes = [];
-    redraw();
+    saveCurrentState();
+    const targetCanvas = visiblePages.get(activePageNumber);
+    if (targetCanvas) redraw(targetCanvas, pageStates.get(activePageNumber));
     updateHistoryButtons();
     scheduleSave();
   }
@@ -482,33 +570,42 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     if (!active) setMessage("");
   }
 
-  async function setPage(pdfId, pageNumber) {
+  async function setPages(pdfId, pages) {
     finishStroke();
     const request = ++loadSequence;
-    if (pdfId === activePdfId && pageNumber === activePageNumber) {
-      redraw();
-      return;
-    }
-
     try {
       await flushSave();
     } catch (error) {
       setMessage(`Could not save annotations before changing pages: ${error.message}`);
     }
     if (request !== loadSequence) return;
+    const changedDocument = pdfId !== activePdfId;
     activePdfId = pdfId;
-    activePageNumber = pageNumber;
-    strokes = [];
-    undoStack = [];
-    redoStack = [];
-    redraw();
-    updateHistoryButtons();
-
+    if (changedDocument) {
+      pageStates = new Map();
+      lastDrawnPage = null;
+    }
+    visiblePages = new Map(pages.map(({ pageNumber, canvas: pageCanvas }) => {
+      pageCanvas.dataset.pageNumber = String(pageNumber);
+      return [pageNumber, pageCanvas];
+    }));
     try {
-      const savedStrokes = await loadAnnotations(pdfId, pageNumber);
+      await Promise.all([...visiblePages.keys()].map(async (pageNumber) => {
+        if (pageStates.has(pageNumber)) return;
+        const savedStrokes = await loadAnnotations(pdfId, pageNumber);
+        if (request !== loadSequence) return;
+        pageStates.set(pageNumber, {
+          strokes: Array.isArray(savedStrokes) ? savedStrokes : [],
+          undoStack: [],
+          redoStack: []
+        });
+      }));
       if (request !== loadSequence) return;
-      strokes = Array.isArray(savedStrokes) ? savedStrokes : [];
-      redraw();
+      const pageNumber = pages.find((page) => page.pageNumber === activePageNumber)?.pageNumber
+        || pages.find((page) => page.pageNumber !== null)?.pageNumber;
+      if (pageNumber) bindPageState(pageNumber, visiblePages.get(pageNumber));
+      redrawVisible();
+      updateHistoryButtons();
       setMessage("");
     } catch (error) {
       if (request === loadSequence) {
@@ -527,14 +624,30 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     }
   }
 
+  async function closeDocument() {
+    finishStroke();
+    await flushSave();
+    pageStates.clear();
+    visiblePages.clear();
+    activePdfId = null;
+    activePageNumber = null;
+    lastDrawnPage = null;
+    strokes = [];
+    undoStack = [];
+    redoStack = [];
+    updateHistoryButtons();
+  }
+
   toggleButton.addEventListener("click", () => {
     if (active) exitMode();
     else setActive(true);
   });
-  canvas.addEventListener("pointerdown", handlePointerDown);
-  canvas.addEventListener("pointermove", handlePointerMove);
-  canvas.addEventListener("pointerup", handlePointerEnd);
-  canvas.addEventListener("pointercancel", handlePointerEnd);
+  for (const inkCanvas of document.querySelectorAll(".ink-canvas")) {
+    inkCanvas.addEventListener("pointerdown", handlePointerDown);
+    inkCanvas.addEventListener("pointermove", handlePointerMove);
+    inkCanvas.addEventListener("pointerup", handlePointerEnd);
+    inkCanvas.addEventListener("pointercancel", handlePointerEnd);
+  }
 
   for (const button of toolButtons) {
     button.addEventListener("click", () => selectTool(button.dataset.annotationTool));
@@ -585,12 +698,24 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     setMessage(`Could not load highlighter opacity: ${error.message}`);
   });
 
-  window.addEventListener("resize", redraw);
+  window.addEventListener("resize", redrawVisible);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      finishStroke();
+      flushSave();
+    }
+  });
+  window.addEventListener("pagehide", () => {
+    finishStroke();
+    flushSave();
+  });
   updateHistoryButtons();
 
   return {
     exitMode,
+    flushSave,
     isActive: () => active,
-    setPage
+    closeDocument,
+    setPages
   };
 }

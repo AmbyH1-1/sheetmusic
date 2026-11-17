@@ -191,6 +191,7 @@ async function start() {
       history.pushState({ reader: true }, "");
       await viewer.open(pdf.id);
       trayManager.applyForDocument();
+      await viewer.refreshLayout();
     }
   });
   viewer = createViewer({
@@ -206,7 +207,9 @@ async function start() {
       await library.refresh();
     },
     isAnnotating: () => annotator.isActive(),
-    onPageChange: (pdfId, pageNumber) => annotator.setPage(pdfId, pageNumber),
+    onPagesChange: (pdfId, pages) => annotator.setPages(pdfId, pages),
+    beforeLayoutChange: () => annotator.flushSave(),
+    onDocumentClose: () => annotator.closeDocument(),
     onToolbarShow: () => {
       if (trayManager) trayManager.setExpanded("toolbar", true);
     },

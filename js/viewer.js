@@ -1,7 +1,7 @@
-import { getPdf, getSetting, saveLastPage } from "./db.js";
+import { getPdf, getSetting, saveLastPage, setSetting } from "./db.js";
 import { perf } from "./performance.js";
 
-const PAGE_RENDER_CACHE_LIMIT = 3;
+const PAGE_RENDER_CACHE_LIMIT = 4;
 const THUMBNAIL_CACHE_LIMIT = 12;
 
 let pdfjsPromise;
@@ -26,15 +26,27 @@ export function createViewer({
   onBack,
   isAnnotating = () => false,
   onPageChange = async () => {},
+  onPagesChange = async () => {},
+  beforeLayoutChange = async () => {},
+  onDocumentClose = async () => {},
   onPageJumpChange = () => {},
   onToolbarShow = () => {}
 }) {
   const readerView = document.querySelector("#readerView");
   const pageContainer = document.querySelector("#pageContainer");
-  const pdfCanvas = document.querySelector("#pdfCanvas");
-  const inkCanvas = document.querySelector("#inkCanvas");
-  const pdfContext = pdfCanvas.getContext("2d", { alpha: false });
-  const inkContext = inkCanvas.getContext("2d");
+  const slots = [0, 1].map((index) => {
+    const pdf = document.querySelector(index ? "#pdfCanvas1" : "#pdfCanvas");
+    const ink = document.querySelector(index ? "#inkCanvas1" : "#inkCanvas");
+    return {
+      element: document.querySelector(`#pageSlot${index}`),
+      pdf,
+      ink,
+      pdfContext: pdf.getContext("2d", { alpha: false })
+    };
+  });
+  const displayModeInput = document.querySelector("#displayMode");
+  const coverPageInput = document.querySelector("#showCoverPageAlone");
+  const coverPageControl = document.querySelector("#coverPageControl");
   const toolbar = document.querySelector("#readerToolbar");
   const titleElement = document.querySelector("#readerTitle");
   const pageLabel = document.querySelector("#pageLabel");
@@ -56,9 +68,12 @@ export function createViewer({
   let loadingTask = null;
   let currentPdf = null;
   let currentPage = 1;
+  let displayMode = "auto";
+  let showCoverAlone = true;
+  let resolvedTwoPage = false;
   let pageLoads = new Map();
   let pageRenders = new Map();
-  let activeRender = null;
+  let activeRenders = new Set();
   let zoneFraction = 0.3;
   let renderSequence = 0;
   let sliderDragging = false;
@@ -70,25 +85,66 @@ export function createViewer({
   let thumbnailsInitialized = false;
   let thumbnailCache = new Map();
   let thumbnailButtons = new Map();
-  let currentThumbnailButton = null;
+  let currentThumbnailButtons = new Set();
   let preloadHandle = null;
-  let preloadRenderTask = null;
-  let preloadCanvas = null;
+  let preloadRenderTasks = new Set();
+  let preloadCanvases = new Set();
   let preloadSequence = 0;
   let openingDocument = false;
+  let settingsLoadError = null;
+  const settingsReady = Promise.all([
+    getSetting("displayMode", "auto"),
+    getSetting("showCoverPageAlone", true)
+  ]).then(([savedMode, savedCover]) => {
+    displayMode = ["single", "two", "auto"].includes(savedMode) ? savedMode : "auto";
+    showCoverAlone = savedCover !== false;
+    displayModeInput.value = displayMode;
+    coverPageInput.checked = showCoverAlone;
+    updateDisplayModeControls();
+  }).catch((error) => {
+    settingsLoadError = error;
+    setMessage(`Could not load reader display settings: ${error.message}`);
+  });
 
   function setMessage(text) {
     readerMessage.textContent = text;
   }
 
+  function getPageNumbers(pageNumber = currentPage, twoPage = resolvedTwoPage) {
+    if (!twoPage || !pdfDocument) return [pageNumber];
+    if (showCoverAlone && pageNumber === 1) return [1];
+    let first = showCoverAlone
+      ? 2 + 2 * Math.floor((pageNumber - 2) / 2)
+      : 1 + 2 * Math.floor((pageNumber - 1) / 2);
+    first = Math.max(showCoverAlone ? 2 : 1, first);
+    const second = first + 1;
+    return second <= pdfDocument.numPages ? [first, second] : [first];
+  }
+
+  function getSpreadAnchor(pageNumber, twoPage = resolvedTwoPage) {
+    const pages = getPageNumbers(pageNumber, twoPage);
+    if (twoPage && pages.length === 1 && pages[0] !== 1 && pageNumber !== 1) return pages[0];
+    if (twoPage && showCoverAlone && pageNumber === 1) return 1;
+    return pages[0];
+  }
+
+  function updateDisplayModeControls() {
+    coverPageControl.hidden = !resolvedTwoPage;
+    readerView.classList.toggle("is-two-page", resolvedTwoPage);
+  }
+
   function updatePageLabel() {
-    pageLabel.textContent = pdfDocument ? `${currentPage} / ${pdfDocument.numPages}` : "— / —";
+    const pages = pdfDocument ? getPageNumbers() : [];
+    const pageText = pages.length === 2 ? `${pages[0]}-${pages[1]}` : String(currentPage);
+    pageLabel.textContent = pdfDocument ? `${pageText} / ${pdfDocument.numPages}` : "— / —";
     pageLabel.title = pdfDocument
-      ? `Current page ${currentPage} of ${pdfDocument.numPages}. Tap to go to a page.`
+      ? `Current ${pageText} of ${pdfDocument.numPages}. Tap to go to a page.`
       : "Page number";
     pageLabel.disabled = !pdfDocument;
-    document.querySelector("#previousButton").disabled = isAnnotating() || !pdfDocument || currentPage <= 1;
-    document.querySelector("#nextButton").disabled = isAnnotating() || !pdfDocument || currentPage >= pdfDocument.numPages;
+    document.querySelector("#previousButton").disabled = isAnnotating() || !pdfDocument ||
+      (resolvedTwoPage ? pages[0] <= 1 : currentPage <= 1);
+    document.querySelector("#nextButton").disabled = isAnnotating() || !pdfDocument ||
+      pages.slice(-1)[0] >= pdfDocument.numPages;
     updatePageJumpControls();
   }
 
@@ -103,18 +159,20 @@ export function createViewer({
       pageJumpSliderValue.value = String(currentPage);
       pageJumpSliderValue.textContent = String(currentPage);
     }
-    const nextThumbnailButton = thumbnailButtons.get(currentPage) || null;
-    if (currentThumbnailButton !== nextThumbnailButton) {
-      if (currentThumbnailButton) {
-        currentThumbnailButton.classList.remove("is-current");
-        currentThumbnailButton.removeAttribute("aria-current");
-      }
-      currentThumbnailButton = nextThumbnailButton;
-      if (currentThumbnailButton) {
-        currentThumbnailButton.classList.add("is-current");
-        currentThumbnailButton.setAttribute("aria-current", "page");
+    const nextThumbnailButtons = new Set(getPageNumbers().map((page) => thumbnailButtons.get(page)).filter(Boolean));
+    for (const button of currentThumbnailButtons) {
+      if (!nextThumbnailButtons.has(button)) {
+        button.classList.remove("is-current", "is-spread-current");
+        button.removeAttribute("aria-current");
       }
     }
+    for (const button of nextThumbnailButtons) {
+      button.classList.add("is-current");
+      if (nextThumbnailButtons.size > 1) button.classList.add("is-spread-current");
+      else button.classList.remove("is-spread-current");
+      button.setAttribute("aria-current", "page");
+    }
+    currentThumbnailButtons = nextThumbnailButtons;
   }
 
   function setPageJumpMessage(text) {
@@ -169,7 +227,7 @@ export function createViewer({
     }
     thumbnailCache.clear();
     thumbnailButtons.clear();
-    currentThumbnailButton = null;
+    currentThumbnailButtons.clear();
     pageThumbnailGrid.replaceChildren();
     thumbnailsInitialized = false;
     reportMemory();
@@ -395,16 +453,35 @@ export function createViewer({
     canvas.height = Math.max(1, Math.round(cssHeight * pixelRatio));
   }
 
-  function calculateViewport(page) {
-    const baseViewport = page.getViewport({ scale: 1 });
+  function getAvailableSize() {
     const bounds = pageContainer.getBoundingClientRect();
     const toolbarPadding = readerView.classList.contains("is-focus-mode")
       ? 0
       : toolbar.getBoundingClientRect().height + 8;
-    const availableWidth = Math.max(1, bounds.width - 12);
-    const availableHeight = Math.max(1, bounds.height - toolbarPadding);
-    const scale = Math.min(availableHeight / baseViewport.height, availableWidth / baseViewport.width);
-    return page.getViewport({ scale });
+    return {
+      width: Math.max(1, bounds.width - 12),
+      height: Math.max(1, bounds.height - toolbarPadding)
+    };
+  }
+
+  async function calculateViewports(pageNumbers) {
+    const pages = await Promise.all(pageNumbers.map((pageNumber) => loadPage(pageNumber)));
+    const baseViewports = pages.map((page) => page.getViewport({ scale: 1 }));
+    const available = getAvailableSize();
+    const gap = resolvedTwoPage ? 8 : 0;
+    const pageWidth = resolvedTwoPage ? Math.max(1, (available.width - gap) / 2) : available.width;
+    return pages.map((page, index) => {
+      const baseViewport = baseViewports[index];
+      const scale = Math.min(
+        available.height / baseViewport.height,
+        pageWidth / baseViewport.width
+      );
+      return {
+        page,
+        viewport: page.getViewport({ scale }),
+        scale
+      };
+    });
   }
 
   function loadPage(pageNumber) {
@@ -464,18 +541,18 @@ export function createViewer({
       }
       preloadHandle = null;
     }
-    if (preloadRenderTask) {
+    for (const task of preloadRenderTasks) {
       try {
-        preloadRenderTask.cancel();
+        task.cancel();
       } catch (error) {
         console.error("Could not cancel the background PDF render:", error);
       }
-      preloadRenderTask = null;
     }
-    if (preloadCanvas) {
-      disposePageRender({ canvas: preloadCanvas });
-      preloadCanvas = null;
+    preloadRenderTasks.clear();
+    for (const canvas of preloadCanvases) {
+      disposePageRender({ canvas });
     }
+    preloadCanvases.clear();
   }
 
   function schedulePreload(pageNumber) {
@@ -522,14 +599,50 @@ export function createViewer({
     });
   }
 
+  async function renderOnePage(pageNumber, slot, pageInfo, sequence) {
+    const { page, viewport } = pageInfo;
+    const pixelRatio = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+    const width = Math.max(1, Math.floor(viewport.width));
+    const height = Math.max(1, Math.floor(viewport.height));
+    resizeCanvas(slot.pdf, width, height, pixelRatio);
+    resizeCanvas(slot.ink, width, height, pixelRatio);
+    const cached = pageRenders.get(pageNumber);
+    let renderedFromCache = false;
+    if (cached && cached.width === slot.pdf.width && cached.height === slot.pdf.height) {
+      slot.pdfContext.setTransform(1, 0, 0, 1, 0, 0);
+      slot.pdfContext.drawImage(cached.canvas, 0, 0);
+      pageRenders.delete(pageNumber);
+      pageRenders.set(pageNumber, cached);
+      renderedFromCache = true;
+    } else {
+      const renderTask = page.render({
+        canvasContext: slot.pdfContext,
+        viewport: page.getViewport({ scale: viewport.scale * pixelRatio })
+      });
+      activeRenders.add(renderTask);
+      try {
+        await renderTask.promise;
+      } finally {
+        activeRenders.delete(renderTask);
+      }
+      if (sequence !== renderSequence) return false;
+      cacheRenderedPage(pageNumber, slot.pdf);
+    }
+    return renderedFromCache;
+  }
+
   async function renderPage(pageNumber, pageTurn = null) {
     if (!pdfDocument || pageNumber < 1 || pageNumber > pdfDocument.numPages) return;
     const sequence = ++renderSequence;
     cancelPreload();
-    if (activeRender) {
-      activeRender.cancel();
-      activeRender = null;
+    for (const render of activeRenders) {
+      try {
+        render.cancel();
+      } catch (error) {
+        console.error("Could not cancel the active PDF render:", error);
+      }
     }
+    activeRenders.clear();
 
     currentPage = pageNumber;
     updatePageLabel();
@@ -537,43 +650,65 @@ export function createViewer({
     try {
       const firstPageRender = openingDocument;
       const firstRenderStartedAt = perf.begin();
-      const page = await loadPage(pageNumber);
+      const pageNumbers = getPageNumbers(currentPage);
+      const pageInfos = await calculateViewports(pageNumbers);
       if (sequence !== renderSequence) return;
-      const viewport = calculateViewport(page);
-      const pixelRatio = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
-      const width = Math.max(1, Math.floor(viewport.width));
-      const height = Math.max(1, Math.floor(viewport.height));
-      resizeCanvas(pdfCanvas, width, height, pixelRatio);
-      resizeCanvas(inkCanvas, width, height, pixelRatio);
-
-      const cached = pageRenders.get(pageNumber);
-      let renderedFromCache = false;
-      if (cached && cached.width === pdfCanvas.width && cached.height === pdfCanvas.height) {
-        const cacheDrawStartedAt = perf.begin();
-        pdfContext.setTransform(1, 0, 0, 1, 0, 0);
-        pdfContext.drawImage(cached.canvas, 0, 0);
-        perf.time("Rendered page cache draw", cacheDrawStartedAt, `page ${pageNumber}`);
-        pageRenders.delete(pageNumber);
-        pageRenders.set(pageNumber, cached);
-        renderedFromCache = true;
-      } else {
-        const pageRenderStartedAt = perf.begin();
-        const renderViewport = page.getViewport({ scale: viewport.scale * pixelRatio });
-        const renderTask = page.render({
-          canvasContext: pdfContext,
-          viewport: renderViewport
-        });
-        activeRender = renderTask;
-        await renderTask.promise;
-        if (activeRender === renderTask) activeRender = null;
-        if (sequence !== renderSequence) return;
-        cacheRenderedPage(pageNumber);
-        perf.time("PDF canvas render", pageRenderStartedAt, `page ${pageNumber}`);
+      slots.forEach((slot) => {
+        slot.element.hidden = true;
+        slot.element.classList.remove("is-blank");
+        slot.element.style.width = "";
+        slot.element.style.height = "";
+      });
+      const gap = resolvedTwoPage ? 8 : 0;
+      pageContainer.style.gap = `${gap}px`;
+      const lonePage = resolvedTwoPage && pageNumbers.length === 1;
+      const spreadHeight = Math.ceil(Math.max(...pageInfos.map((info) => info.viewport.height)));
+      let renderedFromCache = true;
+      const visiblePageRecords = [];
+      const renders = pageInfos.map(async (pageInfo, index) => {
+        const pageNumberForSlot = pageNumbers[index];
+        let slotIndex = index;
+        if (lonePage) {
+          slotIndex = (showCoverAlone && pageNumberForSlot === 1) ||
+            (!showCoverAlone && pageNumberForSlot % 2 === 1) ? 1 : 0;
+        }
+        const slot = slots[slotIndex];
+        slot.element.hidden = false;
+        slot.element.classList.remove("is-blank");
+        slot.element.style.width = `${Math.ceil(pageInfo.viewport.width)}px`;
+        slot.element.style.height = `${resolvedTwoPage ? spreadHeight : Math.ceil(pageInfo.viewport.height)}px`;
+        slot.pdf.dataset.pageNumber = String(pageNumberForSlot);
+        slot.ink.dataset.pageNumber = String(pageNumberForSlot);
+        visiblePageRecords.push({ pageNumber: pageNumberForSlot, canvas: slot.ink });
+        const pageStartedAt = perf.begin();
+        const fromCache = await renderOnePage(pageNumberForSlot, slot, pageInfo, sequence);
+        renderedFromCache = renderedFromCache && fromCache;
+        perf.time(fromCache ? "Rendered page cache draw" : "PDF canvas render", pageStartedAt, `page ${pageNumberForSlot}`);
+        return slot;
+      });
+      const renderedSlots = await Promise.all(renders);
+      if (sequence !== renderSequence) return;
+      if (lonePage) {
+        const visibleSlot = renderedSlots[0];
+        const blankSlot = slots.find((slot) => slot !== visibleSlot);
+        blankSlot.element.hidden = false;
+        blankSlot.element.classList.add("is-blank");
+        blankSlot.element.style.width = visibleSlot.element.style.width;
+        blankSlot.element.style.height = visibleSlot.element.style.height;
+        blankSlot.pdf.style.width = "0px";
+        blankSlot.pdf.style.height = "0px";
+        blankSlot.ink.style.width = "0px";
+        blankSlot.ink.style.height = "0px";
+        blankSlot.pdf.width = 1;
+        blankSlot.pdf.height = 1;
+        blankSlot.ink.width = 1;
+        blankSlot.ink.height = 1;
+        delete blankSlot.pdf.dataset.pageNumber;
+        delete blankSlot.ink.dataset.pageNumber;
       }
-
+      await onPagesChange(currentPdf.id, visiblePageRecords);
       if (sequence !== renderSequence) return;
-      inkContext.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
-      await onPageChange(currentPdf.id, pageNumber);
+      await onPageChange(currentPdf.id, currentPage);
       if (sequence !== renderSequence) return;
       if (firstPageRender) {
         openingDocument = false;
@@ -583,14 +718,17 @@ export function createViewer({
         perf.time(
           renderedFromCache ? "Page turn visible (cached)" : "Page turn visible (uncached)",
           pageTurn.startedAt,
-          `page ${pageNumber}`
+          `page ${currentPage}`
         );
       }
-      saveLastPage(currentPdf.id, currentPage, pdfDocument.numPages).catch((error) => {
+      saveLastPage(currentPdf.id, getSpreadAnchor(currentPage), pdfDocument.numPages).catch((error) => {
         setMessage(`Could not save your place: ${error.message}`);
       });
       reportMemory();
-      schedulePreload(currentPage + 1);
+      const nextAnchor = resolvedTwoPage
+        ? getPageNumbers(currentPage).slice(-1)[0] + 1
+        : currentPage + 1;
+      schedulePreload(nextAnchor);
     } catch (error) {
       if (openingDocument) openingDocument = false;
       if (error.name !== "RenderingCancelledException") {
@@ -599,53 +737,53 @@ export function createViewer({
     }
   }
 
-  function cacheRenderedPage(pageNumber) {
+  function cacheRenderedPage(pageNumber, sourceCanvas) {
     const cachedCanvas = document.createElement("canvas");
-    cachedCanvas.width = pdfCanvas.width;
-    cachedCanvas.height = pdfCanvas.height;
-    cachedCanvas.getContext("2d").drawImage(pdfCanvas, 0, 0);
+    cachedCanvas.width = sourceCanvas.width;
+    cachedCanvas.height = sourceCanvas.height;
+    cachedCanvas.getContext("2d").drawImage(sourceCanvas, 0, 0);
     rememberPageRender(pageNumber, cachedCanvas);
   }
 
   function preloadPage(pageNumber, sequence) {
     if (!pdfDocument || sequence !== preloadSequence || pageNumber > pdfDocument.numPages) return;
     const preloadStartedAt = perf.begin();
-    loadPage(pageNumber).then(async (page) => {
-      if (
-        !pdfDocument ||
-        sequence !== preloadSequence ||
-        pageNumber !== currentPage + 1 ||
-        pageRenders.has(pageNumber)
-      ) return;
-      const viewport = calculateViewport(page);
-      const pixelRatio = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(Math.floor(viewport.width) * pixelRatio));
-      canvas.height = Math.max(1, Math.round(Math.floor(viewport.height) * pixelRatio));
-      preloadCanvas = canvas;
-      const renderTask = page.render({
-        canvasContext: canvas.getContext("2d"),
-        viewport: page.getViewport({ scale: viewport.scale * pixelRatio })
-      });
-      preloadRenderTask = renderTask;
-      await renderTask.promise;
-      if (preloadRenderTask === renderTask) preloadRenderTask = null;
-      if (pdfDocument && sequence === preloadSequence && pageNumber === currentPage + 1) {
-        rememberPageRender(pageNumber, canvas);
-        if (preloadCanvas === canvas) preloadCanvas = null;
-        perf.time("Background page render", preloadStartedAt, `page ${pageNumber}`);
+    const pageNumbers = getPageNumbers(pageNumber);
+    calculateViewports(pageNumbers).then(async (pageInfos) => {
+      if (!pdfDocument || sequence !== preloadSequence) return;
+      await Promise.all(pageInfos.map(async (pageInfo, index) => {
+        const targetPage = pageNumbers[index];
+        if (pageRenders.has(targetPage)) return;
+        const pixelRatio = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(pageInfo.viewport.width * pixelRatio));
+        canvas.height = Math.max(1, Math.round(pageInfo.viewport.height * pixelRatio));
+        preloadCanvases.add(canvas);
+        const task = pageInfo.page.render({
+          canvasContext: canvas.getContext("2d"),
+          viewport: pageInfo.page.getViewport({ scale: pageInfo.viewport.scale * pixelRatio })
+        });
+        preloadRenderTasks.add(task);
+        try {
+          await task.promise;
+          if (pdfDocument && sequence === preloadSequence) {
+            rememberPageRender(targetPage, canvas);
+            preloadCanvases.delete(canvas);
+          } else {
+            disposePageRender({ canvas });
+            preloadCanvases.delete(canvas);
+          }
+        } finally {
+          preloadRenderTasks.delete(task);
+        }
+      }));
+      if (sequence === preloadSequence) {
+        perf.time("Background spread render", preloadStartedAt, `page ${pageNumber}`);
         reportMemory();
-      } else {
-        disposePageRender({ canvas });
       }
     }).catch((error) => {
-      if (preloadRenderTask && sequence === preloadSequence) preloadRenderTask = null;
-      if (preloadCanvas && sequence === preloadSequence) {
-        disposePageRender({ canvas: preloadCanvas });
-        preloadCanvas = null;
-      }
       if (sequence === preloadSequence && error.name !== "RenderingCancelledException") {
-        setMessage(`Could not prepare the next page: ${error.message}`);
+        setMessage(`Could not prepare the next spread: ${error.message}`);
       }
     });
   }
@@ -653,6 +791,7 @@ export function createViewer({
   async function open(pdfId) {
     const openStartedAt = perf.begin();
     await closeDocument();
+    await settingsReady;
     readerView.classList.add("is-active");
     readerView.setAttribute("aria-hidden", "false");
     setMessage("Opening PDF…");
@@ -688,10 +827,16 @@ export function createViewer({
       titleElement.textContent = currentPdf.name;
       titleElement.title = currentPdf.name;
       const requestedPage = Math.min(Math.max(1, currentPdf.lastPage || 1), pdfDocument.numPages);
+      resolvedTwoPage = displayMode === "two" ||
+        (displayMode === "auto" && window.innerWidth > window.innerHeight);
+      updateDisplayModeControls();
       pageLoads = new Map();
       pageRenders = new Map();
       openingDocument = true;
       await renderPage(requestedPage);
+      if (settingsLoadError) {
+        setMessage(`Could not load reader display settings: ${settingsLoadError.message}`);
+      }
       perf.time("PDF open total", openStartedAt, `${pdfDocument.numPages} pages`);
     } catch (error) {
       openingDocument = false;
@@ -706,12 +851,19 @@ export function createViewer({
     pageLabel.setAttribute("aria-expanded", "false");
     sliderDragging = false;
     clearPageThumbnails();
-    try {
-      if (activeRender) activeRender.cancel();
-    } catch (error) {
-      console.error("Could not cancel the active PDF render:", error);
+    for (const render of activeRenders) {
+      try {
+        render.cancel();
+      } catch (error) {
+        console.error("Could not cancel the active PDF render:", error);
+      }
     }
-    activeRender = null;
+    activeRenders.clear();
+    try {
+      await onDocumentClose();
+    } catch (error) {
+      setMessage(`Could not flush annotations while closing the PDF: ${error.message}`);
+    }
     try {
       if (loadingTask) {
         await loadingTask.destroy();
@@ -728,10 +880,23 @@ export function createViewer({
     currentPdf = null;
     currentPage = 1;
     openingDocument = false;
-    pdfCanvas.width = 1;
-    pdfCanvas.height = 1;
-    inkCanvas.width = 1;
-    inkCanvas.height = 1;
+    for (const slot of slots) {
+      slot.element.hidden = true;
+      slot.element.classList.remove("is-blank");
+      slot.element.style.width = "";
+      slot.element.style.height = "";
+      slot.pdf.width = 1;
+      slot.pdf.height = 1;
+      slot.ink.width = 1;
+      slot.ink.height = 1;
+      slot.pdf.style.width = "";
+      slot.pdf.style.height = "";
+      slot.ink.style.width = "";
+      slot.ink.style.height = "";
+      delete slot.pdf.dataset.pageNumber;
+      delete slot.ink.dataset.pageNumber;
+    }
+    pageContainer.style.gap = "0px";
     updatePageLabel();
     reportMemory();
   }
@@ -743,10 +908,15 @@ export function createViewer({
 
   function navigate(delta) {
     if (!pdfDocument || isAnnotating()) return;
-    const nextPage = currentPage + delta;
-    if (nextPage < 1 || nextPage > pdfDocument.numPages) return;
+    const visiblePages = getPageNumbers();
+    const targetPage = resolvedTwoPage
+      ? delta > 0
+        ? visiblePages[visiblePages.length - 1] + 1
+        : visiblePages[0] - 1
+      : currentPage + delta;
+    if (targetPage < 1 || targetPage > pdfDocument.numPages) return;
     showToolbar();
-    goToPage(nextPage);
+    goToPage(resolvedTwoPage ? getSpreadAnchor(targetPage) : targetPage);
   }
 
   function handleTapZone(event) {
@@ -828,7 +998,7 @@ export function createViewer({
   document.querySelector("#backButton").addEventListener("click", async () => {
     try {
       if (currentPdf && pdfDocument) {
-        await saveLastPage(currentPdf.id, currentPage, pdfDocument.numPages);
+        await saveLastPage(currentPdf.id, getSpreadAnchor(currentPage), pdfDocument.numPages);
       }
     } catch (error) {
       setMessage(`Could not save your place: ${error.message}`);
@@ -853,13 +1023,73 @@ export function createViewer({
   });
 
   let resizeTimer = null;
-  window.addEventListener("resize", () => {
+  function scheduleLayoutUpdate() {
     if (!pdfDocument) return;
     window.clearTimeout(resizeTimer);
-    resizeTimer = window.setTimeout(() => {
+    resizeTimer = window.setTimeout(async () => {
+      const nextTwoPage = displayMode === "two" ||
+        (displayMode === "auto" && window.innerWidth > window.innerHeight);
+      let saveError = null;
+      if (nextTwoPage !== resolvedTwoPage) {
+        try {
+          await beforeLayoutChange();
+        } catch (error) {
+          saveError = error;
+        }
+        resolvedTwoPage = nextTwoPage;
+        updateDisplayModeControls();
+      }
+      clearPageRenderCache();
+      await renderPage(currentPage);
+      if (saveError) {
+        setMessage(`Could not save annotations before changing display mode: ${saveError.message}`);
+      }
+    }, 100);
+  }
+  window.addEventListener("resize", scheduleLayoutUpdate);
+  window.addEventListener("orientationchange", scheduleLayoutUpdate);
+
+  async function changeDisplayMode() {
+    const nextMode = displayModeInput.value;
+    if (!["single", "two", "auto"].includes(nextMode) || nextMode === displayMode) return;
+    let saveError = null;
+    try {
+      await beforeLayoutChange();
+    } catch (error) {
+      saveError = error;
+    }
+    displayMode = nextMode;
+    try {
+      await setSetting("displayMode", displayMode);
+    } catch (error) {
+      saveError = error;
+    }
+    const nextTwoPage = displayMode === "two" ||
+      (displayMode === "auto" && window.innerWidth > window.innerHeight);
+    if (resolvedTwoPage !== nextTwoPage) clearPageRenderCache();
+    resolvedTwoPage = nextTwoPage;
+    updateDisplayModeControls();
+    if (pdfDocument) await renderPage(currentPage);
+    if (saveError) setMessage(`Could not save display mode or annotations: ${saveError.message}`);
+  }
+
+  displayModeInput.addEventListener("change", changeDisplayMode);
+  coverPageInput.addEventListener("change", async () => {
+    const previous = showCoverAlone;
+    showCoverAlone = coverPageInput.checked;
+    try {
+      await beforeLayoutChange();
+      await setSetting("showCoverPageAlone", showCoverAlone);
+    } catch (error) {
+      showCoverAlone = previous;
+      coverPageInput.checked = previous;
+      setMessage(`Could not save cover page setting: ${error.message}`);
+      return;
+    }
+    if (resolvedTwoPage && pdfDocument) {
       clearPageRenderCache();
       renderPage(currentPage);
-    }, 100);
+    }
   });
 
   getSetting("tapZoneWidth", zoneFraction).then((savedZoneWidth) => {
@@ -883,5 +1113,11 @@ export function createViewer({
     return Boolean(pdfDocument);
   }
 
-  return { open, setAnnotationMode, setPagePanelExpanded, hasDocument };
+  async function refreshLayout() {
+    if (!pdfDocument) return;
+    clearPageRenderCache();
+    await renderPage(currentPage);
+  }
+
+  return { open, refreshLayout, setAnnotationMode, setPagePanelExpanded, hasDocument };
 }

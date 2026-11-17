@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#111318">
-  <meta name="application-version" content="2.1.7">
+  <meta name="application-version" content="2.2.0">
   <title>Sheet Music</title>
   <link rel="manifest" href="./manifest.json">
   <link rel="apple-touch-icon" href="./icons/icon-180.png">
@@ -84,8 +84,14 @@
 
     <section id="readerView" class="view reader-view" aria-label="PDF reader" aria-hidden="true">
       <div id="pageContainer" class="page-container">
-        <canvas id="pdfCanvas" aria-label="Current sheet music page"></canvas>
-        <canvas id="inkCanvas" aria-hidden="true"></canvas>
+        <div id="pageSlot0" class="page-slot">
+          <canvas id="pdfCanvas" aria-label="Current sheet music page"></canvas>
+          <canvas id="inkCanvas" class="ink-canvas" aria-hidden="true"></canvas>
+        </div>
+        <div id="pageSlot1" class="page-slot" hidden>
+          <canvas id="pdfCanvas1" aria-label="Adjacent sheet music page"></canvas>
+          <canvas id="inkCanvas1" class="ink-canvas" aria-hidden="true"></canvas>
+        </div>
       </div>
       <button id="previousZone" class="tap-zone tap-zone-left" type="button" aria-label="Previous page"></button>
       <button id="nextZone" class="tap-zone tap-zone-right" type="button" aria-label="Next page"></button>
@@ -95,6 +101,18 @@
         <button id="backButton" class="button" type="button">Library</button>
         <div id="readerTitle" class="reader-title"></div>
         <button id="annotationToggle" class="button annotation-toggle" type="button" aria-pressed="false">Annotate</button>
+        <label class="display-mode-control" for="displayMode">
+          <span>Display</span>
+          <select id="displayMode" aria-label="Page display mode">
+            <option value="single">Single</option>
+            <option value="two">Two pages</option>
+            <option value="auto" selected>Auto</option>
+          </select>
+        </label>
+        <label id="coverPageControl" class="cover-page-control" for="showCoverPageAlone">
+          <input id="showCoverPageAlone" type="checkbox" checked>
+          Cover alone
+        </label>
         <div class="page-controls">
           <button id="previousButton" class="button icon-button" type="button" aria-label="Previous page">‹</button>
           <button id="pageLabel" class="button page-label" type="button" aria-live="polite" aria-haspopup="dialog" aria-expanded="false" aria-controls="pageJumpPanel">— / —</button>
