@@ -127,6 +127,7 @@ export function createTrayManager({ viewer, onError = () => {} }) {
     applyExpanded(key, next);
     if (next) scheduleAutoMinimize(key);
     else clearTimer(key);
+    if (changed) readerView.dispatchEvent(new Event("readerlayoutchange"));
     if (changed && persist && !applying) saveSettings();
   }
 
@@ -135,6 +136,7 @@ export function createTrayManager({ viewer, onError = () => {} }) {
     if (settings.focusMode === next) return;
     settings.focusMode = next;
     applyFocusMode();
+    readerView.dispatchEvent(new Event("readerlayoutchange"));
     if (next) {
       for (const key of TRAY_KEYS) clearTimer(key);
     } else {
@@ -171,6 +173,7 @@ export function createTrayManager({ viewer, onError = () => {} }) {
     applying = false;
     applyFocusMode();
     for (const key of TRAY_KEYS) scheduleAutoMinimize(key);
+    readerView.dispatchEvent(new Event("readerlayoutchange"));
   }
 
   async function initialize() {

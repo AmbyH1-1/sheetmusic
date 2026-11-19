@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#111318">
-  <meta name="application-version" content="2.2.1">
+  <meta name="application-version" content="2.2.6">
   <title>Sheet Music</title>
   <link rel="manifest" href="./manifest.json">
   <link rel="apple-touch-icon" href="./icons/icon-180.png">
@@ -113,6 +113,23 @@
           <input id="showCoverPageAlone" type="checkbox" checked>
           Cover alone
         </label>
+        <label class="page-fit-control" for="pageFitMode">
+          <span>Page fit</span>
+          <select id="pageFitMode" aria-label="Page fit">
+            <option value="best">Best fit</option>
+            <option value="width">Fit width</option>
+            <option value="height">Fit height</option>
+          </select>
+        </label>
+        <label class="trim-margins-control" for="trimMargins">
+          <input id="trimMargins" type="checkbox">
+          Trim margins
+        </label>
+        <label class="trim-padding-control" for="trimPadding">
+          Padding <output id="trimPaddingValue">2%</output>
+          <input id="trimPadding" type="range" min="0" max="10" step="1" value="2" aria-label="Trim padding">
+        </label>
+        <button id="resetTrimButton" class="button" type="button">Reset trim</button>
         <div class="page-controls">
           <button id="previousButton" class="button icon-button" type="button" aria-label="Previous page">‹</button>
           <button id="pageLabel" class="button page-label" type="button" aria-live="polite" aria-haspopup="dialog" aria-expanded="false" aria-controls="pageJumpPanel">— / —</button>

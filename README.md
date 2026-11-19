@@ -50,6 +50,7 @@ For every deployment, increment the application version in the `application-vers
 
 - The page number opens page navigation. The toolbar, annotation tools, metronome, recorder, and page navigation can each be minimized.
 - Choose **Single**, **Two pages**, or **Auto** in the reader toolbar. Auto uses a spread in landscape and a single page in portrait. In Two pages mode, **Cover alone** shows page 1 by itself on the right; page navigation and annotations continue to use the original PDF page numbers.
+- Choose **Best fit**, **Fit width**, or **Fit height** from **Page fit**. Best fit is the default and keeps the full page or spread visible; Fit width scrolls tall pages vertically. Fit height uses the available height when the full page or spread fits the width, and scales down otherwise to prevent horizontal clipping. **Trim margins** crops only the display, leaving PDFs and normalized annotation coordinates unchanged. Adjust its padding or use **Reset trim** to rescan a PDF.
 - Use **Focus** to hide the reader controls while keeping page navigation and a running metronome available. Tap **Show controls** to restore them.
 - Expanded trays minimize after eight seconds of inactivity by default. Turn this off in **Reader preferences** in the Library.
 - To inspect layout overflow and ink input during development, open the app with `?debug=1`; the screen shows the UI overflow count and ink mode, tool, canvas sizes, pointer-event counters, and visible-page stroke counts.

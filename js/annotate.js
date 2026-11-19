@@ -50,6 +50,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
   let flushInProgress = false;
   let activeCanvasRect = null;
   let activeCanvasSize = null;
+  let activeCanvasCrop = null;
   let saveTimer = null;
   let pendingSaves = new Map();
   let saveQueue = Promise.resolve();
@@ -245,6 +246,33 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     return { rect, width: rect.width, height: rect.height };
   }
 
+  function getCanvasCrop(targetCanvas = canvas) {
+    const crop = {
+      x: Number(targetCanvas.dataset.cropX),
+      y: Number(targetCanvas.dataset.cropY),
+      width: Number(targetCanvas.dataset.cropWidth),
+      height: Number(targetCanvas.dataset.cropHeight)
+    };
+    if (
+      !Number.isFinite(crop.x) ||
+      !Number.isFinite(crop.y) ||
+      !Number.isFinite(crop.width) ||
+      !Number.isFinite(crop.height) ||
+      crop.width <= 0 ||
+      crop.height <= 0
+    ) {
+      return { x: 0, y: 0, width: 1, height: 1 };
+    }
+    return crop;
+  }
+
+  function mapPointToCanvas(point, size, crop) {
+    return {
+      x: ((point.x - crop.x) / crop.width) * size.width,
+      y: ((point.y - crop.y) / crop.height) * size.height
+    };
+  }
+
   function prepareStroke(stroke, size) {
     context.setTransform(
       canvas.width / size.width,
@@ -262,53 +290,58 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     context.lineJoin = "round";
   }
 
-  function drawSegment(stroke, from, to, measuredSize = getCanvasSize()) {
+  function drawSegment(stroke, from, to, measuredSize = getCanvasSize(), crop = getCanvasCrop()) {
     const size = measuredSize;
     if (!size) return;
     prepareStroke(stroke, size);
+    const fromPoint = mapPointToCanvas(from, size, crop);
+    const toPoint = mapPointToCanvas(to, size, crop);
     const pressure = Math.max(0.1, (from.pressure + to.pressure) / 2);
-    context.lineWidth = Math.max(0.5, stroke.width * size.width * pressure);
+    context.lineWidth = Math.max(0.5, stroke.width * size.width / crop.width * pressure);
     context.beginPath();
-    context.moveTo(from.x * size.width, from.y * size.height);
-    context.lineTo(to.x * size.width, to.y * size.height);
+    context.moveTo(fromPoint.x, fromPoint.y);
+    context.lineTo(toPoint.x, toPoint.y);
     context.stroke();
   }
 
-  function drawDot(stroke, point, measuredSize = getCanvasSize()) {
+  function drawDot(stroke, point, measuredSize = getCanvasSize(), crop = getCanvasCrop()) {
     const size = measuredSize;
     if (!size) return;
     prepareStroke(stroke, size);
-    const radius = Math.max(0.5, stroke.width * size.width * point.pressure / 2);
+    const canvasPoint = mapPointToCanvas(point, size, crop);
+    const radius = Math.max(0.5, stroke.width * size.width / crop.width * point.pressure / 2);
     context.beginPath();
-    context.arc(point.x * size.width, point.y * size.height, radius, 0, Math.PI * 2);
+    context.arc(canvasPoint.x, canvasPoint.y, radius, 0, Math.PI * 2);
     context.fill();
   }
 
   function drawStroke(stroke, measuredSize) {
     if (!stroke.points.length) return;
+    const crop = getCanvasCrop();
     if (stroke.tool === "highlighter") {
       const size = measuredSize;
       if (!size) return;
       prepareStroke(stroke, size);
-      context.lineWidth = Math.max(0.5, stroke.width * size.width);
+      context.lineWidth = Math.max(0.5, stroke.width * size.width / crop.width);
+      const points = stroke.points.map((point) => mapPointToCanvas(point, size, crop));
       context.beginPath();
-      context.moveTo(stroke.points[0].x * size.width, stroke.points[0].y * size.height);
+      context.moveTo(points[0].x, points[0].y);
       if (stroke.points.length === 1) {
-        context.lineTo(stroke.points[0].x * size.width + 0.01, stroke.points[0].y * size.height);
+        context.lineTo(points[0].x + 0.01, points[0].y);
       } else {
-        for (let index = 1; index < stroke.points.length; index += 1) {
-          context.lineTo(stroke.points[index].x * size.width, stroke.points[index].y * size.height);
+        for (let index = 1; index < points.length; index += 1) {
+          context.lineTo(points[index].x, points[index].y);
         }
       }
       context.stroke();
       return;
     }
     if (stroke.points.length === 1) {
-      drawDot(stroke, stroke.points[0], measuredSize);
+      drawDot(stroke, stroke.points[0], measuredSize, crop);
       return;
     }
     for (let index = 1; index < stroke.points.length; index += 1) {
-      drawSegment(stroke, stroke.points[index - 1], stroke.points[index], measuredSize);
+      drawSegment(stroke, stroke.points[index - 1], stroke.points[index], measuredSize, crop);
     }
   }
 
@@ -352,25 +385,29 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     return Math.hypot(px - (ax + projection * dx), py - (ay + projection * dy));
   }
 
-  function strokeIsTouched(stroke, point, size, eraserRadius) {
-    const px = point.x * size.width;
-    const py = point.y * size.height;
-    const strokeRadius = stroke.width * size.width / 2;
+  function strokeIsTouched(stroke, point, size, eraserRadius, crop) {
+    const mappedPoint = mapPointToCanvas(point, size, crop);
+    const px = mappedPoint.x;
+    const py = mappedPoint.y;
+    const strokeRadius = stroke.width * size.width / crop.width / 2;
     const threshold = eraserRadius + strokeRadius;
     if (stroke.points.length === 1) {
       const onlyPoint = stroke.points[0];
-      return Math.hypot(px - onlyPoint.x * size.width, py - onlyPoint.y * size.height) <= threshold;
+      const mappedOnlyPoint = mapPointToCanvas(onlyPoint, size, crop);
+      return Math.hypot(px - mappedOnlyPoint.x, py - mappedOnlyPoint.y) <= threshold;
     }
     for (let index = 1; index < stroke.points.length; index += 1) {
       const from = stroke.points[index - 1];
       const to = stroke.points[index];
+      const mappedFrom = mapPointToCanvas(from, size, crop);
+      const mappedTo = mapPointToCanvas(to, size, crop);
       const distance = distanceToSegment(
         px,
         py,
-        from.x * size.width,
-        from.y * size.height,
-        to.x * size.width,
-        to.y * size.height
+        mappedFrom.x,
+        mappedFrom.y,
+        mappedTo.x,
+        mappedTo.y
       );
       if (distance <= threshold) return true;
     }
@@ -379,11 +416,12 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
 
   function eraseAt(point) {
     const size = activeCanvasSize || getCanvasSize();
+    const crop = activeCanvasCrop || getCanvasCrop();
     if (!size || !currentErasures) return;
-    const radius = currentStroke.width * size.width / 2;
+    const radius = currentStroke.width * size.width / crop.width / 2;
     let changed = false;
     for (const stroke of strokes) {
-      if (!currentErasures.has(stroke) && strokeIsTouched(stroke, point, size, radius)) {
+      if (!currentErasures.has(stroke) && strokeIsTouched(stroke, point, size, radius, crop)) {
         currentErasures.add(stroke);
         changed = true;
       }
@@ -391,12 +429,16 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     if (changed) redraw();
   }
 
-  function makePoint(event, rect = activeCanvasRect || canvas.getBoundingClientRect()) {
+  function makePoint(
+    event,
+    rect = activeCanvasRect || canvas.getBoundingClientRect(),
+    crop = activeCanvasCrop || getCanvasCrop()
+  ) {
     if (!rect.width || !rect.height) return null;
     const pressure = Number.isFinite(event.pressure) && event.pressure > 0 ? event.pressure : 0.5;
     return {
-      x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
-      y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
+      x: Math.min(1, Math.max(0, crop.x + ((event.clientX - rect.left) / rect.width) * crop.width)),
+      y: Math.min(1, Math.max(0, crop.y + ((event.clientY - rect.top) / rect.height) * crop.height)),
       pressure: Math.min(1, pressure)
     };
   }
@@ -413,9 +455,9 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     } else if (currentStroke.tool === "highlighter") {
       return true;
     } else if (previous) {
-      drawSegment(currentStroke, previous, point, activeCanvasSize);
+      drawSegment(currentStroke, previous, point, activeCanvasSize, activeCanvasCrop);
     } else {
-      drawDot(currentStroke, point, activeCanvasSize);
+      drawDot(currentStroke, point, activeCanvasSize, activeCanvasCrop);
     }
     return true;
   }
@@ -477,6 +519,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     activePointerId = null;
     activeCanvasRect = null;
     activeCanvasSize = null;
+    activeCanvasCrop = null;
     if (inkFrameRequest !== null) {
       window.cancelAnimationFrame(inkFrameRequest);
       inkFrameRequest = null;
@@ -505,6 +548,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     activePointerId = event.pointerId;
     activeCanvasRect = size.rect;
     activeCanvasSize = size;
+    activeCanvasCrop = getCanvasCrop();
     if (perf.enabled && inkFrameRequest === null) {
       inkFrameRequest = window.requestAnimationFrame(measureInkFrame);
     }
@@ -513,7 +557,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     currentStroke = {
       tool: currentTool,
       color: currentColor,
-      width: (thickness * widthFactor) / size.width,
+      width: (thickness * widthFactor * activeCanvasCrop.width) / size.width,
       opacity: currentTool === "highlighter" ? highlighterOpacity : 1,
       points: []
     };
