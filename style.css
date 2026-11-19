@@ -401,11 +401,6 @@ h1 {
   box-shadow: 0 2px 24px #0008;
 }
 
-#inkCanvas {
-  background: transparent;
-  pointer-events: none;
-}
-
 .ink-canvas {
   background: transparent;
   pointer-events: none;

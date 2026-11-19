@@ -20,6 +20,14 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
   const fingerInput = document.querySelector("#allowFingerDrawing");
   const toolButtons = Array.from(document.querySelectorAll("[data-annotation-tool]"));
   const colorButtons = Array.from(document.querySelectorAll("[data-ink-color]"));
+  const inkCanvases = Array.from(document.querySelectorAll(".ink-canvas"));
+  const pointerCounts = new Map(inkCanvases.map((inkCanvas) => [
+    inkCanvas,
+    { down: 0, move: 0, up: 0, cancel: 0 }
+  ]));
+  const debugReadout = new URLSearchParams(window.location.search).get("debug") === "1"
+    ? document.createElement("pre")
+    : null;
 
   let active = false;
   let activePdfId = null;
@@ -49,9 +57,66 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
   let lastAutosaveAt = 0;
   let inkFrameRequest = null;
   let lastInkFrameTime = 0;
+  let debugFrameRequest = null;
+
+  if (debugReadout) {
+    debugReadout.id = "inkDebugReadout";
+    debugReadout.setAttribute("aria-live", "polite");
+    debugReadout.style.cssText = [
+      "position:fixed",
+      "z-index:10001",
+      "top:max(4px,env(safe-area-inset-top))",
+      "left:max(4px,env(safe-area-inset-left))",
+      "max-width:min(460px,calc(100vw - 8px))",
+      "max-height:24vh",
+      "overflow:auto",
+      "margin:0",
+      "padding:5px 7px",
+      "border:1px solid #8794a8",
+      "border-radius:6px",
+      "background:rgba(17,19,24,.94)",
+      "color:#e8edf5",
+      "font:10px/1.3 ui-monospace,SFMono-Regular,Consolas,monospace",
+      "white-space:pre-wrap",
+      "overflow-wrap:anywhere",
+      "pointer-events:none"
+    ].join(";");
+    document.body.append(debugReadout);
+  }
 
   function setMessage(text) {
     message.textContent = text;
+  }
+
+  function updateDebugReadout() {
+    if (!debugReadout) return;
+    const canvasDetails = inkCanvases.map((inkCanvas) => {
+      const rect = inkCanvas.getBoundingClientRect();
+      const counts = pointerCounts.get(inkCanvas);
+      return `${inkCanvas.id}: ${Math.round(rect.width)}x${Math.round(rect.height)} CSS / ${inkCanvas.width}x${inkCanvas.height} px; down/move/up/cancel ${counts.down}/${counts.move}/${counts.up}/${counts.cancel}`;
+    });
+    const pageDetails = [...visiblePages.keys()].map((pageNumber) => {
+      const state = pageStates.get(pageNumber);
+      return `${pageNumber}:${state ? state.strokes.length : "loading"}`;
+    });
+    debugReadout.textContent = [
+      `Ink debug | mode ${active ? "on" : "off"} | tool ${currentTool} | canvases ${inkCanvases.length}`,
+      ...canvasDetails,
+      `Visible page strokes (page:count): ${pageDetails.join(", ") || "none"}`
+    ].join("\n");
+  }
+
+  function scheduleDebugReadout() {
+    if (!debugReadout || debugFrameRequest !== null) return;
+    debugFrameRequest = window.requestAnimationFrame(() => {
+      debugFrameRequest = null;
+      updateDebugReadout();
+    });
+  }
+
+  function countPointerEvent(inkCanvas, eventName) {
+    pointerCounts.get(inkCanvas)[eventName] += 1;
+    scheduleDebugReadout();
   }
 
   function updateHistoryButtons() {
@@ -60,6 +125,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
       : { undoStack, redoStack };
     undoButton.disabled = historyState.undoStack.length === 0;
     redoButton.disabled = historyState.redoStack.length === 0;
+    updateDebugReadout();
   }
 
   function saveCurrentState() {
@@ -477,6 +543,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
       button.classList.toggle("is-selected", selected);
       button.setAttribute("aria-pressed", String(selected));
     }
+    updateDebugReadout();
   }
 
   function selectColor(color) {
@@ -567,6 +634,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     toggleButton.setAttribute("aria-pressed", String(active));
     toggleButton.textContent = active ? "Done" : "Annotate";
     onModeChange(active);
+    updateDebugReadout();
     if (!active) setMessage("");
   }
 
@@ -606,6 +674,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
       if (pageNumber) bindPageState(pageNumber, visiblePages.get(pageNumber));
       redrawVisible();
       updateHistoryButtons();
+      updateDebugReadout();
       setMessage("");
     } catch (error) {
       if (request === loadSequence) {
@@ -642,11 +711,23 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     if (active) exitMode();
     else setActive(true);
   });
-  for (const inkCanvas of document.querySelectorAll(".ink-canvas")) {
-    inkCanvas.addEventListener("pointerdown", handlePointerDown);
-    inkCanvas.addEventListener("pointermove", handlePointerMove);
-    inkCanvas.addEventListener("pointerup", handlePointerEnd);
-    inkCanvas.addEventListener("pointercancel", handlePointerEnd);
+  for (const inkCanvas of inkCanvases) {
+    inkCanvas.addEventListener("pointerdown", (event) => {
+      countPointerEvent(inkCanvas, "down");
+      handlePointerDown(event);
+    });
+    inkCanvas.addEventListener("pointermove", (event) => {
+      countPointerEvent(inkCanvas, "move");
+      handlePointerMove(event);
+    });
+    inkCanvas.addEventListener("pointerup", (event) => {
+      countPointerEvent(inkCanvas, "up");
+      handlePointerEnd(event);
+    });
+    inkCanvas.addEventListener("pointercancel", (event) => {
+      countPointerEvent(inkCanvas, "cancel");
+      handlePointerEnd(event);
+    });
   }
 
   for (const button of toolButtons) {
@@ -698,7 +779,10 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     setMessage(`Could not load highlighter opacity: ${error.message}`);
   });
 
-  window.addEventListener("resize", redrawVisible);
+  window.addEventListener("resize", () => {
+    redrawVisible();
+    scheduleDebugReadout();
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       finishStroke();
@@ -710,6 +794,7 @@ export function createAnnotator({ onModeChange = () => {} } = {}) {
     flushSave();
   });
   updateHistoryButtons();
+  updateDebugReadout();
 
   return {
     exitMode,

@@ -936,7 +936,7 @@ export function createViewer({
     const target = event.target;
     if (pageJumpPanel.contains(target) || pageLabel.contains(target)) return;
     closePagePanel();
-    if (!target.closest("#readerToolbar, #metronomePanel, #recorderPanel, #annotationToolbar, #focusRestoreButton")) {
+    if (!target.closest("#readerToolbar, #metronomePanel, #recorderPanel, #annotationToolbar, #focusRestoreButton, .ink-canvas")) {
       event.preventDefault();
       event.stopPropagation();
     }
